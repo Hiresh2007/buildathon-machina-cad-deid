@@ -7,12 +7,15 @@ from pathlib import Path
 import ezdxf
 
 import dxf
+import pdf_identity
 from pipeline import Identities, PathIndex
 
 
 def check(root, attempt, key_file):
     paths = [p.relative_to(root) for p in root.rglob("*") if p.is_file() or p.is_symlink()]
-    index = PathIndex(paths, Identities(key_file.read_bytes()))
+    ids = Identities(key_file.read_bytes())
+    pdf_identity.restore_directory_forms(root, attempt, paths, ids)
+    index = PathIndex(paths, ids)
     opened = entities = defects = failures = 0
     for item in paths:
         if item.suffix.lower() != ".dxf":

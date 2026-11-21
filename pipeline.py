@@ -12,6 +12,7 @@ import tempfile
 import unicodedata
 from collections import Counter, defaultdict
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 import step
 import dxf
@@ -40,6 +41,30 @@ class Identities:
         self.key = key
         self.words = {}
         self.replacements = {}
+        self.hosts = {}
+
+    def register_hosts(self, names):
+        if not names:
+            return
+        known = set(self.hosts).union(names)
+        self.hosts.clear()
+        for name in sorted(known, key=lambda host: (host.count("."), host)):
+            digest = hmac.new(self.key, ("hostname\0" + name).encode("ascii"), hashlib.sha256).hexdigest()[:20]
+            self.hosts[name] = self.host_alias(name) or "site-" + digest + ".example.invalid"
+            self.replacements[name] = self.hosts[name]
+
+    def host_alias(self, name):
+        if name in self.hosts:
+            return self.hosts[name]
+        labels = name.split(".")
+        for start in range(1, len(labels) - 1):
+            parent = self.hosts.get(".".join(labels[start:]))
+            if parent:
+                if start == 1 and labels[0] == "www":
+                    return "www." + parent
+                digest = hmac.new(self.key, ("subdomain\0" + name).encode("utf-8"), hashlib.sha256).hexdigest()[:20]
+                return "sub-" + digest + "." + parent
+        return None
 
     def alias(self, value):
         name = canonical(value)
@@ -49,8 +74,27 @@ class Identities:
         # their code points for distinct, repeatable aliases on damaged inputs.
         digest = hmac.new(self.key, name.encode("utf-8", "surrogatepass"), hashlib.sha256).hexdigest()[:20]
         if re.fullmatch(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", name):
-            return "contact-" + digest + "@example.invalid"
+            domain = self.host_alias(name.rsplit("@", 1)[1]) if self.hosts else None
+            return "contact-" + digest + "@" + (domain or "example.invalid")
         if name.startswith(("http://", "https://", "www.")):
+            if self.hosts:
+                try:
+                    original = value.strip()
+                    url = urlsplit("https://" + original if name.startswith("www.") else original)
+                    host = self.host_alias(url.hostname or "")
+                except ValueError:
+                    host = None
+                if host:
+                    resource = url.path not in ("", "/") or url.query or url.fragment or url.netloc.casefold() != url.hostname
+                    result = url.scheme + "://" + host
+                    if resource:
+                        # URL paths, queries and fragments can be case-sensitive.
+                        user_info, separator, server = url.netloc.rpartition("@")
+                        authority = user_info + separator + server.casefold()
+                        identity = "\0".join((url.scheme, authority, url.path, url.query, url.fragment))
+                        token = hmac.new(self.key, identity.encode("utf-8", "surrogatepass"), hashlib.sha256).hexdigest()[:20]
+                        result += "?ref=" + token
+                    return result
             return "https://site-" + digest + ".example.invalid"
         dimensions = [m[0].replace("µ", "u").replace("×", "x") for m in DIMENSION.finditer(name)]
         return " ".join(["Anon-" + digest, *dimensions])
@@ -65,13 +109,26 @@ class Identities:
         node[None] = self.alias(value)
 
     def matches(self, text):
-        contacts = {match.start(): match for match in CONTACT.finditer(text)}
+        contacts = {}
+        for match in CONTACT.finditer(text):
+            value = match[0]
+            if value.casefold().startswith(("http://", "https://", "www.")):
+                value = value.rstrip(".,;!")
+                for opening, closing in (("(", ")"), ("[", "]"), ("{", "}")):
+                    while value.endswith(closing) and value.count(closing) > value.count(opening):
+                        value = value[:-1]
+            contacts[match.start()] = match.start() + len(value), self.alias(value)
+        if self.hosts and "." in text:
+            for match in pdf_identity.BARE_HOST.finditer(text):
+                if match.start() not in contacts:
+                    replacement = self.host_alias(match[0].casefold())
+                    if replacement:
+                        contacts[match.start()] = match.end(), replacement
         i = 0
         while i < len(text):
             end, j, node, replacement = i, i, self.words, None
             if i in contacts:
-                match = contacts[i]
-                end, replacement = match.end(), self.alias(match[0])
+                end, replacement = contacts[i]
             elif i == 0 or not (text[i - 1].isalnum() and text[i].isalnum()):
                 while j < len(text):
                     char = unicodedata.normalize("NFKC", text[j]).casefold()
@@ -139,7 +196,7 @@ class PathIndex:
         component = stem if structural(stem) else self.ids.alias(stem)
         # Website aliases have a URI form inside documents. Use the same host
         # as a single filename component so a path retains its original depth.
-        return component.removeprefix("https://") + suffix
+        return component.removeprefix("https://").removeprefix("http://").replace("?ref=", "-ref-") + suffix
 
     def reference(self, current, value):
         clean = value.strip().replace("\\", "/").removeprefix("file://")
@@ -247,7 +304,7 @@ def run(input_dir, attempt, key_file, limit, workers=1):
         index.link_counts = links
         _write_code(staged)
         report = [
-            "Machina CAD De-ID", "",
+            "Machina CAD De-ID", "", pdf_identity.CONTACT_REPORT,
             "Reproduce on Python 3.12: install PDF support with python3 -m pip install -r code/requirements.txt.",
             "python3 code/pipeline.py --input /private/input --attempt /private/new/attempt-1 --key-file /private/key.bin",
             f"This run used --max-mib {limit // (1024 * 1024)} --workers {workers}. Supply the same 32-byte private key and input snapshot.",

@@ -2,9 +2,22 @@
 
 from collections import defaultdict
 from pathlib import PurePosixPath
+from urllib.parse import urlsplit
 import re
 
 from naming import canonical, structural
+
+
+# Only an email address, an HTTP(S) address, or an explicit www host supplies
+# evidence that a dotted spelling is a domain. Engineering filenames do not.
+CONTACT_REPORT = "Contact domains share pseudonyms across email, web links and visible text."
+HOSTNAME = r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}"
+HOST_END = r"(?![a-z0-9_-]|\.[a-z0-9])"
+HOST_EVIDENCE = re.compile(
+    r"(?P<url>(?<![\w.-])(?:https?://|www\.)[^\s<>\x22']+)"
+    + r"|(?<![\w.+-])[\w.+-]+@(?P<host>" + HOSTNAME + r")" + HOST_END, re.I | re.ASCII,
+)
+BARE_HOST = re.compile(r"(?<![\w.-])(" + HOSTNAME + r")" + HOST_END, re.I | re.ASCII)
 
 
 PERSON_FIELDS = {
@@ -101,8 +114,10 @@ def restore_directory_forms(root, attempt, paths, ids):
 
     limit = 64 * 1024 * 1024
     report = attempt / "README.txt"
-    if report.is_file():
-        cap = re.search(r"(?:--max-mib\s+|Input size ceiling:\s*)(\d+)", report.read_text(encoding="utf-8"))
+    contents = report.read_text(encoding="utf-8") if report.is_file() else ""
+    use_hosts = CONTACT_REPORT in contents.splitlines()
+    if contents:
+        cap = re.search(r"(?:--max-mib\s+|Input size ceiling:\s*)(\d+)", contents)
         if cap and int(cap[1]) > 0:
             limit = int(cap[1]) * 1024 * 1024
     forms = set()
@@ -112,7 +127,8 @@ def restore_directory_forms(root, attempt, paths, ids):
             continue
         try:
             if source.stat().st_size <= limit:
-                forms.update(drawing_pdf.discover(source.read_bytes()).forms)
+                observed = drawing_pdf.discover(source.read_bytes()).forms
+                forms.update(item for item in observed if use_hosts or item[0] != "hostname")
         except (OSError, ValueError):
             continue
     resolve(forms, ids)
@@ -125,6 +141,26 @@ class Observations(set):
         super().__init__(values)
         self.people = set()
         self.forms = set()
+
+    def observe_hosts(self, text):
+        if "." not in text or ("@" not in text and "://" not in text and "www." not in text.casefold()):
+            return
+        for match in HOST_EVIDENCE.finditer(text):
+            host = match["host"]
+            if host is None:
+                value = match["url"].rstrip(".,;!)")
+                try:
+                    origin = urlsplit(value if "://" in value else "https://" + value)
+                    host = origin.hostname or ""
+                except ValueError:
+                    continue
+                if len(host) > 253 or not re.fullmatch(HOSTNAME, host, re.I | re.ASCII):
+                    continue
+            host = host.casefold()
+            if host.endswith(".example.invalid") or host == "example.invalid":
+                continue
+            root = host.removeprefix("www.") if host.count(".") >= 2 else host
+            self.forms.add(("hostname", root, root))
 
     def observe(self, role, value):
         value = value.strip()
@@ -181,9 +217,12 @@ def resolve(forms, ids):
     domains = defaultdict(set)
     confirmed = defaultdict(set)
     titles = set()
+    hosts = set()
     for kind, raw, target in forms:
         name, root = canonical(raw), canonical(target)
-        if kind == "realm":
+        if kind == "hostname":
+            hosts.add(name)
+        elif kind == "realm":
             domains[name].add(root)
         elif kind == "confirmed":
             confirmed[name].add(root)
@@ -191,6 +230,7 @@ def resolve(forms, ids):
             ids.replacements[name] = ids.alias(root)
         elif kind == "asset":
             titles.add(raw)
+    ids.register_hosts(hosts)
     for login, roots in confirmed.items():
         if (
             len(login) >= 3

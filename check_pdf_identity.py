@@ -58,9 +58,74 @@ def check_drawing_cells():
         assert doc[0].get_drawings()
 
 
+def check_link_rectangles():
+    pdf = drawing_pdf.library()
+    ids = Identities(b"test key for linked drawings")
+    ids.learn("Fixture Owner")
+    ids.register_hosts({"orbitallab.test"})
+    paths = PathIndex([Path("drawings/sample.pdf"), Path("models/fixture-part.step")], ids)
+    expected_model = paths.reference("drawings/sample.pdf", "../models/fixture-part.step")
+    url = "https://orbitallab.test/support"
+    with pdf.open() as doc:
+        page = doc.new_page()
+        page.insert_text((40, 60), "Fixture Owner")
+        page.insert_text((40, 95), "Fixture Owner")
+        for rect in ((35, 45, 150, 65), (35, 115, 150, 135)):
+            page.insert_link({"kind": pdf.LINK_LAUNCH, "from": pdf.Rect(rect), "file": "../models/fixture-part.step"})
+        page.insert_link({"kind": pdf.LINK_URI, "from": pdf.Rect(35, 79, 150, 99), "uri": url})
+        original = doc.tobytes()
+    result = drawing_pdf.rewrite(original, ids.alias, ids, lambda value: paths.reference("drawings/sample.pdf", value))
+    with pdf.open(stream=result) as doc:
+        links = {tuple(data["from"]): data for data in doc[0].get_links()}
+        assert len(links) == 3
+        assert links[(35, 45, 150, 65)]["file"] == links[(35, 115, 150, 135)]["file"] == expected_model
+        assert links[(35, 79, 150, 99)]["uri"] == ids.alias(url)
+        assert "Fixture Owner" not in doc[0].get_text()
+
+
+def check_contact_domains():
+    sources = [
+        document("", "", ["Support: help@orbitallab.test", "Sales: sales@orbitallab.test"]),
+        document("", "", ["https://ORBITALLAB.test/SpecA", "See (https://orbitallab.test/speca)."]),
+        document("", "", ["orbitallab.test", "www.orbitallab.test", "bracket.sldprt"]),
+        document("", "", ["help@secondlab.test", "west.orbitallab.test"]),
+    ]
+    ids = Identities(b"fixture for contact domains")
+    found = [drawing_pdf.discover(data) for data in sources]
+    for observations in found:
+        for value in observations:
+            ids.learn(value)
+    pdf_identity.resolve({entry for observations in found for entry in observations.forms}, ids)
+    host = ids.alias("orbitallab.test")
+    second = ids.alias("secondlab.test")
+    assert host != second and host.endswith(".example.invalid")
+    help_address = ids.alias("help@orbitallab.test")
+    sales_address = ids.alias("sales@orbitallab.test")
+    assert help_address != sales_address and all(value.endswith("@" + host) for value in [help_address, sales_address])
+    specific = ids.alias("https://orbitallab.test/SpecA")
+    assert specific == ids.alias("https://ORBITALLAB.test/SpecA")
+    assert specific != ids.alias("https://orbitallab.test/speca")
+    assert ids.redact_text("See (https://orbitallab.test/speca).") == "See (" + ids.alias("https://orbitallab.test/speca") + ")."
+    assert ids.redact_text("bracket.sldprt") == "bracket.sldprt"
+    sub = ids.host_alias("west.orbitallab.test")
+    assert sub.endswith("." + host) and sub != host
+    expected = ((help_address, sales_address), (specific, ids.alias("https://orbitallab.test/speca")),
+                (host, "https://www." + host, "bracket.sldprt"), (ids.alias("help@secondlab.test"), sub))
+    for data, values in zip(sources, expected):
+        out = drawing_pdf.rewrite(data, ids.alias, ids, lambda p: p)
+        with drawing_pdf.library().open(stream=out) as pdf:
+            text = "".join(pdf[0].get_text().split())
+            assert all(value in text for value in values)
+            assert "orbitallab.test" not in text.casefold()
+
+
 def main():
+    check_link_rectangles()
     check_drawing_cells()
+    check_contact_domains()
     source = {
+        "contact.pdf": document("", "", ["help@orbitallab.test"]),
+        "domain.pdf": document("", "", ["orbitallab.test"]),
         "a.pdf": document(
             r"NORTH\mquill (DESK-1)", r"C:\models\North Pin.slddrw", ["Drawn by: mquill", "Length 25 mm"]
         ),
@@ -142,6 +207,13 @@ def main():
         restored = Identities(key)
         pdf_identity.restore_directory_forms(cache, direct, list(map(Path, source)), restored)
         assert restored.replacements == ids.replacements
+        assert ids.alias("orbitallab.test") in outputs["contact.pdf"][1]
+        assert ids.alias("orbitallab.test") in outputs["domain.pdf"][1]
+        report = direct / "README.txt"
+        report.write_text(report.read_text().replace(pdf_identity.CONTACT_REPORT, ""))
+        legacy = Identities(key)
+        pdf_identity.restore_directory_forms(cache, direct, list(map(Path, source)), legacy)
+        assert not legacy.hosts and legacy.alias("orbitallab.test") != ids.alias("orbitallab.test")
         assert "Length 25 mm" in outputs["a.pdf"][1] and "Tolerance 0.02 mm" in outputs["g.pdf"][1]
         assert (direct / "code/pdf_identity.py").is_file()
     print("Typed account, conflicting domain, linked model title, physical text and resume checks passed.")

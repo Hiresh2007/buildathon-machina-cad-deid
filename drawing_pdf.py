@@ -170,6 +170,8 @@ def document(data):
     pdf = library()
     try:
         with pdf.open(stream=data, filetype="pdf") as doc:
+            if not doc.is_pdf:
+                raise UnsupportedPDF("input content is not a PDF document")
             if (
                 doc.needs_pass
                 or doc.get_sigflags() > 0
@@ -608,6 +610,10 @@ def process(data, alias, redact, reference, write):
             else None
         )
         metadata(doc, alias, redact, write)
+        if not write:
+            for value in (doc.metadata or {}).values():
+                if isinstance(value, str):
+                    alias.observe_hosts(value)
         if write:
             page_labels(doc, title, alias, redact)
         attachments = []
@@ -704,6 +710,7 @@ def process(data, alias, redact, reference, write):
                             redact(details.get("description", "")),
                         )
             if write:
+                links_to_keep = []
                 for link in page.get_links():
                     key = (
                         "uri"
@@ -719,11 +726,24 @@ def process(data, alias, redact, reference, write):
                         if result != link[key]:
                             link[key] = result
                             page.update_link(link)
+                        if key == "file" or (key == "uri" and result.casefold().startswith(("https://", "http://", "mailto:"))):
+                            links_to_keep.append(link)
+                    elif link["kind"] == library().LINK_GOTO and link.get("page", -1) >= 0:
+                        links_to_keep.append(link)
                 redact_page(page, alias, redact, numeric_title, title)
+                if links_to_keep:
+                    # Applying a text redaction also removes intersecting link annotations.
+                    surviving = {xref for xref, *_ in page.annot_xrefs()}
+                    for link in links_to_keep:
+                        if link["xref"] not in surviving:
+                            page.insert_link(link)
             else:
+                for link in page.get_links():
+                    alias.observe_hosts(link.get("uri") or "")
                 records = list(lines(page))
                 strong = title_fields(records, title)
                 for i, (text, _, _) in enumerate(records):
+                    alias.observe_hosts(text)
                     if i in strong:
                         pdf_identity.typed(strong[i], text.strip(), alias)
                     match = LABEL.match(text)
@@ -759,6 +779,7 @@ def discover(data):
         return value
 
     add.observe = values.observe
+    add.observe_hosts = values.observe_hosts
     process(data, add, lambda value: value, lambda value: value, False)
     return values.finish()
 

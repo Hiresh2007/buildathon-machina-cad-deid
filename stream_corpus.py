@@ -305,6 +305,7 @@ def docs(db, args, index):
     report = args.attempt / "README.txt"
     with report.open("w", encoding="utf-8") as out:
         out.write("Machina CAD de-identification manifest run\n\n")
+        out.write(pipeline.pdf_identity.CONTACT_REPORT + "\n")
         out.write("Use code/STREAMING.md to reproduce. Install dependencies listed in code/.\n")
         out.write(f"Input manifest SHA-256: {digest(args.manifest)}\nInput size ceiling: {args.max_mib} MiB.\n")
         total, size, no_md5 = db.execute("SELECT COUNT(*),SUM(bytes),SUM(md5='') FROM files").fetchone()
