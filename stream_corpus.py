@@ -86,7 +86,7 @@ def init_db(db, args, key):
           unresolved INTEGER DEFAULT 0);
       CREATE INDEX IF NOT EXISTS work ON files(status,id);
     """)
-    code = {Path(pipeline.__file__), Path(__file__), SOURCE / "naming.py", SOURCE / "pdf_identity.py", SOURCE / "requirements.txt"}
+    code = {Path(pipeline.__file__), Path(__file__), SOURCE / "naming.py", SOURCE / "pdf_identity.py", SOURCE / "jpeg_authors.py", SOURCE / "requirements.txt"}
     code.update(Path(handler.__file__) for handler in pipeline.HANDLERS.values())
     if args.learn_native:
         code.add(SOURCE / "inspect_native.py")
@@ -325,6 +325,7 @@ def docs(db, args, index):
         out.write(pipeline.pdf_identity.SHEET_REPORT + "\n")
         out.write(pipeline.pdf_identity.DIRECTORY_REPORT + "\n")
         out.write(pipeline.pdf_identity.MODEL_REPORT + "\n")
+        out.write("Install ExifTool 13.55 on PATH to read and rewrite tagged JPEG authors.\n")
         out.write("Use code/STREAMING.md to reproduce. Install dependencies listed in code/.\n")
         out.write(f"Input manifest SHA-256: {digest(args.manifest)}\nInput size ceiling: {args.max_mib} MiB.\n")
         total, size, no_md5 = db.execute("SELECT COUNT(*),SUM(bytes),SUM(md5='') FROM files").fetchone()

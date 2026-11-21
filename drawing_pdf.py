@@ -8,6 +8,7 @@ from xml.dom import Node, minidom
 from xml.parsers.expat import ExpatError
 
 import dxf
+import jpeg_authors
 import mesh
 import pdf_identity
 import step
@@ -347,6 +348,18 @@ def metadata(doc, alias, redact, write):
             if write and result != value:
                 doc.xref_set_key(entry, key, pdf.get_pdf_str(result))
     for xref in range(1, doc.xref_length()):
+        if doc.xref_get_key(xref, "Subtype") == ("name", "/Image"):
+            _, image_filter = doc.xref_get_key(xref, "Filter")
+            if image_filter in ("/DCTDecode", "[/DCTDecode]"):
+                original = doc.xref_stream_raw(xref)
+                if original:
+                    edited = jpeg_authors.transform(original, alias, meaningful, write)
+                    if write and edited is not original:
+                        params = doc.xref_get_key(xref, "DecodeParms")
+                        doc.update_stream(xref, edited, compress=False)
+                        doc.xref_set_key(xref, "Filter", image_filter)
+                        if params[0] != "null":
+                            doc.xref_set_key(xref, "DecodeParms", params[1])
         # PieceInfo stores application-private editing data. Illustrator and
         # prepress tools may include a complete extra copy of the artwork and
         # its source filename here. The PDF painting resources are separate.
