@@ -1,6 +1,6 @@
 # Machina CAD De-ID
 
-This two-pass processor pseudonymizes text STEP/STP models, ASCII DXF drawings, STL meshes, PDFs, ACIS SAT models, SVG drawings, FreeCAD FCStd projects and standard 3MF core packages. It builds the Machina attempt directory with a corpus, runnable source, and a report of every omitted input. Most CAD handlers use the Python standard library. The 3MF handler preserves XML namespaces using lxml. PDF processing uses the version of PyMuPDF pinned in requirements.txt. The expanded pipeline and native-reader checks ran on Python 3.12. [Official track](https://www.joinbuilders.org/buildathon/tracks/machina-deid)
+This two-pass processor pseudonymizes text STEP/STP models, ASCII DXF drawings, STL meshes, PDFs, ACIS SAT models, SVG drawings, FreeCAD FCStd projects, standard 3MF core packages and static VRML97 scenes. It builds the Machina attempt directory with a corpus, runnable source, and a report of every omitted input. Most CAD handlers use the Python standard library. The 3MF handler preserves XML namespaces using lxml. PDF processing uses the version of PyMuPDF pinned in requirements.txt. The expanded pipeline and native-reader checks ran on Python 3.12. [Official track](https://www.joinbuilders.org/buildathon/tracks/machina-deid)
 
 ## Run locally
 
@@ -34,6 +34,8 @@ The program stages the entire attempt before publishing the directory. A new att
 7. Translate SVG authorship metadata, titled annotations and external file links while preserving element IDs, drawing paths, coordinate attributes and internal anchors.
 8. Translate ACIS SAT length-prefixed strings in supported metadata and reference attributes and preserve the B-rep records. In FreeCAD FCStd archives, process document XML properties and embedded SVGs while preserving ZIP member names, application object IDs and shape streams.
 
+9. Read static VRML97 nodes and their typed fields. Redact identifying scene, viewpoint and visible text labels. Remove comments, rename connected DEF/USE symbols, and translate local scene links and viewpoint fragments together. Numeric geometry, topology, transforms, material values and navigation modes retain their original source tokens. Scenes with scripts, event routes, prototypes, unknown fields, encoded textures, VRML 1.0 or external URLs enter the omission report. Geometry that itself depicts an identity requires visual review. [VRML97 grammar](https://www.web3d.org/documents/specifications/14772/V2.0/part1/grammar.html) · [Node reference](https://www.web3d.org/documents/specifications/14772/V2.0/part1/nodesRef.html)
+
 For a full manifest, follow [the streaming instructions](STREAMING.md). The private checkpoint lets you resume a disk-bounded run after interruption. The directory processor accepts `--workers` to distribute individual files between processes. Both passes use one shared set of learned identities.
 
 The first eight-format practice cohort used a deterministic selection with same-directory neighbors. To reconstruct the exact 5,415 paths from the original manifest and a private source mirror, run the following first. Use the resulting practice folder as the directory processor input.
@@ -50,6 +52,7 @@ python3 check.py
 python3 check_formats.py
 python3 check_exchange.py
 python3 check_manufacturing.py
+python3 check_vrml.py
 python3 check_stream.py
 python3 check_formats.py
 ```
@@ -98,3 +101,13 @@ This is a subset pilot on the organizer's corpus. Standalone archives, raster im
 STEP geometry tokens and entity handles are preserved. Recognized material and unit fields are protected. Descriptions and drawing annotations use the identity dictionary plus contact-pattern matching. A match can be ambiguous in free text. An absent, ambiguous or unsupported referenced file can leave a broken external link. Review the report and engineering usability before submitting a complete attempt. No public score has been measured for this pilot.
 
 PDF image pixels, outlined lettering, logos and ambiguous unlabelled names can retain identifiers. The handler omits encrypted, signed, interactive, active-script and associated-file documents, and documents containing unsupported attachment formats or rich-text annotation payloads. Supported embedded files share identity mappings with standalone files. These checks cover the tested metadata, engineering records and fixtures. They do not establish complete de-identification of arbitrary PDFs.
+
+### VRML geometry check
+
+The organizer manifest lists 3,551 WRL files. In a private 150-file sample, all 146 distinct input size and MD5 pairs matched that manifest. The parser accepted 63 static VRML97 models. VTK 9.5.2 independently produced identical point arrays, topology, actor transforms and material values from the inputs and outputs, across 71,521 points and 136,115 cells. The other 87 included VRML 1.0 extension scenes, interactive files and unsupported or malformed documents. Synthetic cases cover linked scene files, viewpoints, shared geometry and format-required strings. [VTK VRML importer](https://vtk.org/doc/nightly/html/classvtkVRMLImporter.html)
+
+```sh
+python -m pip install -r requirements-verify.txt
+python check_vrml.py --vtk
+python check_vrml.py --sample-dir /private/work/wrl --manifest /private/work/manifest.tsv
+```

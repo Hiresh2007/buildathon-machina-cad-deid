@@ -57,6 +57,8 @@ GENERAL_NAMES = {
     "iges",
     "igs",
     "stl",
+    "vrml",
+    "wrl",
     "sldprt",
     "sldasm",
     "slddrw",
