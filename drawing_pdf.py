@@ -146,6 +146,8 @@ def document(data):
     pdf = library()
     try:
         with pdf.open(stream=data, filetype="pdf") as doc:
+            if not doc.is_pdf:
+                raise UnsupportedPDF("input content is not a PDF document")
             if (
                 doc.needs_pass
                 or doc.get_sigflags() > 0

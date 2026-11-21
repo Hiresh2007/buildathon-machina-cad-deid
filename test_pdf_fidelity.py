@@ -31,6 +31,12 @@ def drawing(changed_geometry=False, caption="test caption"):
 
 
 class PDFFidelity(unittest.TestCase):
+    def test_image_with_pdf_extension(self):
+        image = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 2, 2), False)
+        image.clear_with(255)
+        with self.assertRaises(UnsupportedPDF):
+            discover(image.tobytes("png"))
+
     def test_metadata_dictionary_without_stream(self):
         with pymupdf.open(stream=drawing()) as doc:
             metadata = doc.get_new_xref()
