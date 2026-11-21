@@ -36,6 +36,13 @@ The program stages the entire attempt before publishing the directory. A new att
 
 For a full manifest, follow [the streaming instructions](STREAMING.md). The private checkpoint lets you resume a disk-bounded run after interruption. The directory processor accepts `--workers` to distribute individual files between processes. Both passes use one shared set of learned identities.
 
+The first eight-format practice cohort used a deterministic selection with same-directory neighbors. To reconstruct the exact 5,415 paths from the original manifest and a private source mirror, run the following first. Use the resulting practice folder as the directory processor input.
+
+```sh
+python3 select_practice.py --manifest /private/work/manifest.tsv --input /private/work/mirror --output /private/work/practice
+```
+
+
 ## Checks
 
 ```sh

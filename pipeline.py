@@ -178,7 +178,7 @@ def _write_code(staged):
         "pipeline.py", "workers.py", "step.py", "dxf.py", "naming.py", "mesh.py", "drawing_pdf.py",
         "sat.py", "svg.py", "fcstd.py", "requirements.txt", "requirements-verify.txt", "check.py",
         "check_formats.py", "check_native_formats.py", "check_exchange.py", "check_geometry.py",
-        "check_dxf.py", "stream_corpus.py", "check_stream.py", "inspect_native.py", "NATIVE-AUDIT.md",
+        "check_dxf.py", "stream_corpus.py", "select_practice.py", "check_stream.py", "inspect_native.py", "NATIVE-AUDIT.md",
         "STREAMING.md", "README.md", "LICENSE",
     )
     for name in names:
