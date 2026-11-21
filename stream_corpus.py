@@ -428,6 +428,7 @@ def duplicate_discoveries(db):
 
 def prefetch_small_sources(rows, args):
     """Overlap small mirror transfers with parsing, keeping native readers in separate processes."""
+    byte_limit = getattr(args, "prefetch_kib", 128) * 1024
     def take(item):
         row, transfer = item
         if transfer is not None:
@@ -441,7 +442,7 @@ def prefetch_small_sources(rows, args):
     with ThreadPoolExecutor(max_workers=args.prefetch_small) as pool:
         for row in rows:
             transfer = None
-            if row["bytes"] <= 128 * 1024 and (not args.cache or not (args.cache / row["path"]).is_file()):
+            if row["bytes"] <= byte_limit and (not args.cache or not (args.cache / row["path"]).is_file()):
                 transfer = pool.submit(fetch, row, args)
             pending.append((row, transfer))
             if len(pending) >= 2 * args.prefetch_small:
@@ -594,6 +595,8 @@ def options(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prefetch-small", type=int, default=0, metavar="N",
                         help="overlap N verified mirror reads for small discovery inputs")
+    parser.add_argument("--prefetch-kib", type=int, default=128, metavar="KIB",
+                        help="largest input read ahead from the mirror (default: 128 KiB)")
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--state", required=True, type=Path, help="private SQLite checkpoint and default HMAC key")
     parser.add_argument("--attempt", required=True, type=Path, help="new numbered attempt-N staging folder")
@@ -621,7 +624,7 @@ def options(argv=None):
         if path is not None:
             setattr(args, name, path.expanduser().resolve())
     args.key_file = args.key_file or args.state / "alias.key"
-    if (min(args.workers, args.max_mib, args.chunk_mib, args.state_mib, args.timeout) < 1
+    if (min(args.workers, args.max_mib, args.chunk_mib, args.state_mib, args.timeout, args.prefetch_kib) < 1
             or min(args.retries, args.reserve_mib, args.prefetch_small) < 0 or (args.work_limit is not None and args.work_limit < 1)):
         parser.error("invalid worker, size, timeout, retry or work limit")
     if not re.fullmatch(r"attempt-[1-9]\d*", args.attempt.name) or (args.offline and not args.cache):
