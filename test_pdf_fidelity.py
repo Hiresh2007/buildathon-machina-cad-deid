@@ -9,6 +9,7 @@ import pypdfium2 as pdfium
 import pymupdf
 
 from check_native_formats import (
+    preserves_measurement_spacing,
     check_pdf,
     check_identities,
     graphics_render,
@@ -33,6 +34,25 @@ def drawing(changed_geometry=False, caption="test caption"):
 
 
 class PDFFidelity(unittest.TestCase):
+    def test_extracted_unit_spacing_requires_unchanged_physical_glyphs(self):
+        def page_with(label, x):
+            with pymupdf.open() as document:
+                page = document.new_page()
+                page.insert_text((x, 30), label)
+                page.insert_text((x, 60), label)
+                return document.tobytes()
+
+        before = collections.Counter({"25 mm": 2})
+        changed_space = collections.Counter({"25mm": 2})
+        original = page_with("25 mm", 10)
+        for payload, expected in [(original, True), (page_with("25 mm", 10.02), False),
+                                  (page_with("26 mm", 10), False), (page_with("25 cm", 10), False)]:
+            with (closing(pdfium.PdfDocument(original)) as first, closing(pdfium.PdfDocument(payload)) as second,
+                  closing(first[0]) as a, closing(second[0]) as b,
+                  closing(a.get_textpage()) as left, closing(b.get_textpage()) as right):
+                self.assertEqual(preserves_measurement_spacing(left, right, before, changed_space), expected)
+                self.assertFalse(preserves_measurement_spacing(left, right, before, collections.Counter({"25mm": 1})))
+
     def test_image_with_pdf_extension(self):
         image = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 2, 2), False)
         image.clear_with(255)

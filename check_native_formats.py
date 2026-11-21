@@ -31,15 +31,59 @@ UNITS = re.compile(
 WEB_ADDRESS = re.compile(r"(?:https?://|www\.)[^\s<>\x22']+", re.I)
 
 
-def measurements(text):
+def measurement_matches(text):
     addresses = [match.span() for match in WEB_ADDRESS.finditer(text)]
-    return collections.Counter(
-        match[0]
-        for match in UNITS.finditer(text)
-        if not any(
-            left <= match.start() and match.end() <= right for left, right in addresses
-        )
-    )
+    return (match for match in UNITS.finditer(text)
+            if not any(left <= match.start() and match.end() <= right for left, right in addresses))
+
+
+def measurements(text):
+    return collections.Counter(match[0] for match in measurement_matches(text))
+
+
+def compact_units(values):
+    result = collections.Counter()
+    for spelling, count in values.items():
+        result["".join(spelling.split())] += count
+    return result
+
+
+def measurement_boxes(page_text, needed):
+    # PDFium can synthesize or omit a space while extracting the same glyphs.
+    # Its indexed Unicode text gives a physical box for each original character.
+    length = page_text.count_chars()
+    if length > 250000:
+        return {}
+    text = "".join(chr(raw.FPDFText_GetUnicode(page_text, i)) for i in range(length))
+    found = collections.defaultdict(list)
+    for match in measurement_matches(text):
+        label = "".join(match[0].split())
+        if label in needed:
+            boxes = tuple(page_text.get_charbox(i) for i in range(*match.span()) if not text[i].isspace())
+            found[label].append(boxes)
+    return found
+
+
+def preserves_measurement_spacing(original, edited, before, after):
+    required = compact_units(before - after)
+    if not required:
+        return True
+    source_counts, target_counts = compact_units(before), compact_units(after)
+    if any(source_counts[label] != target_counts[label] for label in required):
+        return False
+    first = measurement_boxes(original, required)
+    second = measurement_boxes(edited, required)
+    for label in required:
+        left, right = sorted(first.get(label, ())), sorted(second.get(label, ()))
+        if len(left) != source_counts[label] or len(left) != len(right):
+            return False
+        for a, b in zip(left, right):
+            # The remaining characters encode the exact digits, decimal mark,
+            # and case-sensitive unit. Compare every physical bound in points.
+            if len(a) != len(b) or any(not math.isclose(x, y, rel_tol=0, abs_tol=0.0001)
+                                       for ga, gb in zip(a, b) for x, y in zip(ga, gb)):
+                return False
+    return True
 
 
 def check_mesh(before, after, counts):
@@ -184,7 +228,7 @@ def native_page(a, b, mupa, mupb, counts):
                 break
     with closing(a.get_textpage()) as at, closing(b.get_textpage()) as bt:
         units = measurements(at.get_text_bounded())
-        if units - measurements(bt.get_text_bounded()):
+        if not preserves_measurement_spacing(at, bt, units, measurements(bt.get_text_bounded())):
             raise ValueError("dimension or unit text is missing")
     verify_paint(mupa, mupb)
     if verify_graphics:
