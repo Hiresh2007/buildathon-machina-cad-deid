@@ -81,6 +81,8 @@ python3 check_native_formats.py --input /private/work/input --attempt /private/w
 
 On private real inputs, all 549 accepted SVGs preserved the inspected geometry attributes and IDs. Of 1,050 SAT files, 1,048 passed structural checks. In an independent ACIS reader, 56 of the first 80 original files parsed, and all 56 transformed files had matching B-rep entity types and body counts. The other 24 original files were rejected by that reader. All 45 FreeCAD archives reopened and all 1,174 embedded B-rep shape streams matched byte-for-byte. Unrecognized metadata and raster previews in these formats may still contain identifying information.
 
+The submitted practice cohort uses a second PDF verifier after the directory run. Install `requirements-verify.txt` and use `screen_pdfs.py` with `--input`, `--attempt`, `--key-file`, and a separate private `--holdback` directory. It records held-back outputs in the attempt report.
+
 ## Coverage limits
 
 This is a subset pilot on the organizer's corpus. Standalone archives, raster images, binary DXF, proprietary CAD formats, logos and engineering previews require additional handlers. The pipeline omits unsupported files and reports them. STEP exchange files with signed or external-reference sections are outside its supported grammar. The text handlers have limited coverage of embedded formatting, untagged identities, domain aliases and company names split across fields. The path mapper preserves recognized engineering descriptors, mechanical dimensions and organizer source categories. Unrecognized neutral names can still receive pseudonyms.
