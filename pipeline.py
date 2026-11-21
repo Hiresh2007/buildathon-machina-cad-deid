@@ -39,6 +39,7 @@ CONTACT = re.compile(
 class Identities:
     def __init__(self, key):
         self.key = key
+        self.preserve_directories = True
         self.words = {}
         self.replacements = {}
         self.hosts = {}
@@ -193,7 +194,7 @@ class PathIndex:
     def part(self, value, directory, parents=()):
         suffix = "" if directory else PurePosixPath(value).suffix
         stem = value[:-len(suffix)] if suffix else value
-        preserve = structural(stem) or (directory and engineering_directory(stem, parents))
+        preserve = structural(stem) or (directory and self.ids.preserve_directories and engineering_directory(stem, parents))
         component = stem if preserve else self.ids.alias(stem)
         # Website aliases have a URI form inside documents. Use the same host
         # as a single filename component so a path retains its original depth.
@@ -305,6 +306,7 @@ def run(input_dir, attempt, key_file, limit, workers=1):
         _write_code(staged)
         report = [
             "Machina CAD De-ID", "", pdf_identity.CONTACT_REPORT, pdf_identity.STEP_CONTACT_REPORT, pdf_identity.SHEET_REPORT,
+            pdf_identity.DIRECTORY_REPORT, pdf_identity.MODEL_REPORT,
             "Reproduce on Python 3.12: install PDF support with python3 -m pip install -r code/requirements.txt.",
             "python3 code/pipeline.py --input /private/input --attempt /private/new/attempt-1 --key-file /private/key.bin",
             f"This run used --max-mib {limit // (1024 * 1024)} --workers {workers}. Supply the same 32-byte private key and input snapshot.",

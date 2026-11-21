@@ -13,6 +13,8 @@ from naming import canonical, engineering_directory, structural
 CONTACT_REPORT = "Contact domains share pseudonyms across email, web links and visible text."
 STEP_CONTACT_REPORT = "STEP header authors and organizations contribute contact domains."
 SHEET_REPORT = "Numbered PDF sheet titles preserve inventory-confirmed drawing and model pseudonyms."
+DIRECTORY_REPORT = "Conventional engineering directories are retained in artifact paths."
+MODEL_REPORT = "Drawing filename descriptors are retained with their adjacent model pseudonyms."
 SHEET_TITLE = re.compile(
     r"(?P<base>[^/\\\r\n]{1,200}?)"
     r"(?P<suffix>(?:\s*[-–—_:|,;]\s*|\s+)(?:sheet|page|layout|blatt|feuille|hoja|foglio)"
@@ -80,8 +82,10 @@ def asset(value):
     return parts[:-1], name.stem, name.suffix
 
 
-def asset_title(value, alias):
+def asset_title(value, alias, preserve_directories=None):
     folders, stem, extension = asset(value)
+    if preserve_directories is None:
+        preserve_directories = getattr(getattr(alias, "__self__", None), "preserve_directories", True)
 
     def component(part):
         if (
@@ -94,7 +98,7 @@ def asset_title(value, alias):
             return part
         return alias(part)
 
-    parts = [part if engineering_directory(part, folders[:i]) else component(part)
+    parts = [part if preserve_directories and engineering_directory(part, folders[:i]) else component(part)
              for i, part in enumerate(folders)]
     return "/".join([*parts, component(stem) + extension])
 
@@ -118,6 +122,13 @@ def visible_asset(text):
 
 def restore_directory_forms(root, attempt, paths, ids):
     """Rebuild the private evidence used by a separately invoked attempt verifier."""
+    packaged_naming = attempt / "code" / "naming.py"
+    # A release already in use introduced role-aware directories before adding a
+    # report entry. Its packaged source identifies that historical behavior.
+    has_directory_reader = packaged_naming.is_file() and (
+        "\ndef engineering_directory(" in packaged_naming.read_text(encoding="utf-8")
+    )
+    ids.preserve_directories = has_directory_reader
     if not (attempt / "code" / "pdf_identity.py").is_file():
         return
     import drawing_pdf
@@ -126,8 +137,10 @@ def restore_directory_forms(root, attempt, paths, ids):
     limit = 64 * 1024 * 1024
     report = attempt / "README.txt"
     contents = report.read_text(encoding="utf-8") if report.is_file() else ""
-    use_hosts = CONTACT_REPORT in contents.splitlines()
-    use_step = STEP_CONTACT_REPORT in contents.splitlines()
+    lines = contents.splitlines()
+    ids.preserve_directories = DIRECTORY_REPORT in lines or has_directory_reader
+    use_hosts = CONTACT_REPORT in lines
+    use_step = STEP_CONTACT_REPORT in lines
     if contents:
         cap = re.search(r"(?:--max-mib\s+|Input size ceiling:\s*)(\d+)", contents)
         if cap and int(cap[1]) > 0:
@@ -145,7 +158,7 @@ def restore_directory_forms(root, attempt, paths, ids):
                 forms.update(item for item in observed if use_hosts or item[0] != "hostname")
         except (OSError, ValueError):
             continue
-    resolve(forms, ids, paths if SHEET_REPORT in contents.splitlines() else ())
+    resolve(forms, ids, paths if SHEET_REPORT in lines else (), link_models=MODEL_REPORT in lines)
 
 
 class Observations(set):
@@ -231,7 +244,35 @@ def typed(role, value, alias):
     return alias(value)
 
 
-def resolve(forms, ids, paths=()):
+MODEL_EXTENSIONS = {".sldprt", ".sldasm", ".step", ".stp", ".ipt", ".iam", ".fcstd", ".sat", ".stl", ".3mf"}
+DRAWING_STEM = re.compile(
+    r"(?P<base>.+?)(?P<suffix>[ _.-]+(?:assembly drawing|part drawing|detail drawing|technical drawing|"
+    r"drawing|dwg|dibujo|dessin|zeichnung)|\.(?:slddrw|idw|dxf))\Z", re.I,
+)
+
+
+def link_drawing_names(paths, ids):
+    """Retain a drawing descriptor when a model with the exact base exists beside it."""
+    drawings = defaultdict(list)
+    for path in paths:
+        if path.suffix.casefold() == ".pdf" and (match := DRAWING_STEM.fullmatch(path.stem)):
+            base = canonical(match["base"])
+            if base and not DRAWING_STEM.fullmatch(base):
+                drawings[path.parent, base].append((path.stem, match["suffix"]))
+    proposals = defaultdict(set)
+    for path in paths:
+        if path.suffix.casefold() not in MODEL_EXTENSIONS:
+            continue
+        pair = (path.parent, canonical(path.stem))
+        for name, suffix in drawings.get(pair, ()):
+            model = path.stem if structural(path.stem) else ids.alias(path.stem)
+            proposals[canonical(name)].add(model + suffix)
+    for name, values in proposals.items():
+        if len(values) == 1:
+            ids.replacements.setdefault(name, next(iter(values)))
+
+
+def resolve(forms, ids, paths=(), *, link_models=True):
     domains = defaultdict(set)
     confirmed = defaultdict(set)
     titles = set()
@@ -261,6 +302,9 @@ def resolve(forms, ids, paths=()):
             and roots == domains[login]
         ):
             ids.replacements[login] = ids.alias(next(iter(roots)))
+    paths = tuple(paths)
+    if link_models:
+        link_drawing_names(paths, ids)
     for title in sorted(titles):
         ids.replacements[canonical(title)] = asset_title(title, ids.alias)
     if sheets:

@@ -58,6 +58,50 @@ def check_drawing_cells():
         assert doc[0].get_drawings()
 
 
+
+def check_drawing_filenames():
+    ids = Identities(b"synthetic co-located drawing and model")
+    paths = [Path(n) for n in (
+        "models/Quartz-17.step", "models/Quartz-17_DWG.PDF", "models/Quartz-17_DWG.stp",
+        "other/Unrelated Drawing.pdf", "elsewhere/Unrelated.step",
+        "generic/bracket.step", "generic/bracket - Drawing.pdf",
+    )]
+    pdf_identity.resolve([], ids, iter(paths))
+    index = PathIndex(paths, ids)
+    model = Path(index.targets[str(paths[0])])
+    drawing = Path(index.targets[str(paths[1])])
+    assert drawing.stem == model.stem + "_DWG"
+    assert Path(index.targets[str(paths[2])]).stem == drawing.stem
+    assert index.reference(str(paths[0]), paths[1].name) == drawing.name
+    assert ids.alias("Unrelated Drawing") != ids.alias("Unrelated") + " Drawing"
+    assert Path(index.targets[str(paths[6])]).stem == "bracket - Drawing"
+    assert len({index.targets[str(p)].casefold() for p in paths}) == len(paths)
+
+    with tempfile.TemporaryDirectory() as folder:
+        attempt = Path(folder) / "attempt"
+        packaged = attempt / "code"
+        packaged.mkdir(parents=True)
+        (packaged / "pdf_identity.py").write_text("# fixture")
+        (packaged / "naming.py").write_text("# earlier directory behavior")
+        report = attempt / "README.txt"
+        report.write_text(pdf_identity.SHEET_REPORT)
+        previous = Identities(bytes(32))
+        pdf_identity.restore_directory_forms(Path(folder) / "input", attempt, paths, previous)
+        assert not previous.preserve_directories
+        assert previous.alias("Quartz-17_DWG") != previous.alias("Quartz-17") + "_DWG"
+        (packaged / "naming.py").write_text("\ndef engineering_directory(value, parents): pass")
+        intermediate = Identities(bytes(32))
+        pdf_identity.restore_directory_forms(Path(folder) / "input", attempt, paths, intermediate)
+        assert intermediate.preserve_directories
+        assert intermediate.alias("Quartz-17_DWG") == previous.alias("Quartz-17_DWG")
+        report.write_text("\n".join((pdf_identity.SHEET_REPORT, pdf_identity.DIRECTORY_REPORT, pdf_identity.MODEL_REPORT)))
+        current = Identities(bytes(32))
+        pdf_identity.restore_directory_forms(Path(folder) / "input", attempt, paths, current)
+        assert current.preserve_directories
+        assert current.alias("Quartz-17_DWG") == current.alias("Quartz-17") + "_DWG"
+
+
+
 def check_sheet_titles():
     ids = Identities(b"sheet inventory check")
     identities = pdf_identity.Observations()
@@ -135,6 +179,7 @@ def check_contact_domains():
 
 def main():
     check_sheet_titles()
+    check_drawing_filenames()
     check_link_rectangles()
     check_drawing_cells()
     check_contact_domains()
