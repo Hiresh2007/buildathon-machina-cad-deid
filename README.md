@@ -1,6 +1,6 @@
 # Machina CAD De-ID
 
-This two-pass processor pseudonymizes text STEP/STP models, ASCII DXF drawings, STL meshes, PDFs, ACIS SAT models, SVG drawings and FreeCAD FCStd projects. It builds the Machina attempt directory with a corpus, runnable source, and a report of every omitted input. The CAD handlers use the Python standard library. PDF processing uses the version of PyMuPDF pinned in requirements.txt. The expanded pipeline and native-reader checks ran on Python 3.12. [Official track](https://www.joinbuilders.org/buildathon/tracks/machina-deid)
+This two-pass processor pseudonymizes text STEP/STP models, ASCII DXF drawings, STL meshes, PDFs, ACIS SAT models, SVG drawings, FreeCAD FCStd projects and standard 3MF core packages. It builds the Machina attempt directory with a corpus, runnable source, and a report of every omitted input. Most CAD handlers use the Python standard library. The 3MF handler preserves XML namespaces using lxml. PDF processing uses the version of PyMuPDF pinned in requirements.txt. The expanded pipeline and native-reader checks ran on Python 3.12. [Official track](https://www.joinbuilders.org/buildathon/tracks/machina-deid)
 
 ## Run locally
 
@@ -49,6 +49,7 @@ python3 select_practice.py --manifest /private/work/manifest.tsv --input /privat
 python3 check.py
 python3 check_formats.py
 python3 check_exchange.py
+python3 check_manufacturing.py
 python3 check_stream.py
 python3 check_formats.py
 ```
@@ -82,6 +83,8 @@ python3 check_native_formats.py --input /private/work/input --attempt /private/w
 On private real inputs, all 549 accepted SVGs preserved the inspected geometry attributes and IDs. Of 1,050 SAT files, 1,048 passed structural checks. In an independent ACIS reader, 56 of the first 80 original files parsed, and all 56 transformed files had matching B-rep entity types and body counts. The other 24 original files were rejected by that reader. All 45 FreeCAD archives reopened and all 1,174 embedded B-rep shape streams matched byte-for-byte. Unrecognized metadata and raster previews in these formats may still contain identifying information.
 
 The submitted practice cohort uses a second PDF verifier after the directory run. Install `requirements-verify.txt` and use `screen_pdfs.py` with `--input`, `--attempt`, `--key-file`, and a separate private `--holdback` directory. It records held-back outputs in the attempt report.
+
+The 3MF handler preserves mesh vertices, triangle indices, build transforms, object identifiers and units. It pseudonymizes typed model metadata and removes optional thumbnail parts and their relationships. It omits unsupported vendor settings, external resources and unknown attachments. In a sample of 150 real packages, 113 qualified, with 1,367,586 vertices and 2,119,934 triangles unchanged. Of 20 checked in lib3mf 2.5.0, seven source packages opened and matched the rewritten mesh and build state. The native reader rejected the other 13 originals. [3MF Core Specification](https://github.com/3MFConsortium/spec_core/blob/master/3MF%20Core%20Specification.md)
 
 ## Coverage limits
 

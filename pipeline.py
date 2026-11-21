@@ -18,6 +18,7 @@ import dxf
 import mesh
 import drawing_pdf
 import fcstd
+import manufacturing
 import sat
 import svg
 import workers as file_workers
@@ -25,7 +26,7 @@ from naming import canonical, structural, DIMENSION
 
 
 HANDLERS = {".step": step, ".stp": step, ".dxf": dxf, ".stl": mesh, ".pdf": drawing_pdf,
-            ".sat": sat, ".svg": svg, ".fcstd": fcstd}
+            ".sat": sat, ".svg": svg, ".fcstd": fcstd, ".3mf": manufacturing}
 CONTACT = re.compile(
     r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+|(?:https?://|www\.)[^\s<>\x22']+"
     r"|(?<!\w)\+\d{1,3}[- (][0-9() .-]{6,18}\d(?!\w)", re.I,
@@ -176,7 +177,7 @@ def _write_code(staged):
     dest.mkdir()
     names = (
         "pipeline.py", "workers.py", "step.py", "dxf.py", "naming.py", "mesh.py", "drawing_pdf.py",
-        "sat.py", "svg.py", "fcstd.py", "requirements.txt", "requirements-verify.txt", "check.py",
+        "sat.py", "svg.py", "fcstd.py", "manufacturing.py", "check_manufacturing.py", "requirements.txt", "requirements-verify.txt", "check.py",
         "check_formats.py", "check_native_formats.py", "check_exchange.py", "check_geometry.py",
         "check_dxf.py", "stream_corpus.py", "select_practice.py", "screen_pdfs.py", "check_stream.py", "inspect_native.py", "NATIVE-AUDIT.md",
         "STREAMING.md", "README.md", "LICENSE",
@@ -245,7 +246,7 @@ def run(input_dir, attempt, key_file, limit, workers=1):
         report += [f"Omitted ({reason}): {count}." for reason, count in sorted(counts.items())]
         report += [f"Path fields {label}: {count}." for label, count in sorted(index.link_counts.items())]
         report += ["", "Scope and limitations",
-                   "Only the supplied input directory was examined. Supported files are text STEP/STP, ASCII DXF, STL meshes, PDFs, ACIS SAT, SVG and FreeCAD FCStd documents.",
+                   "Only the supplied input directory was examined. Supported files are text STEP/STP, ASCII DXF, STL meshes, PDFs, ACIS SAT, SVG, FreeCAD FCStd and standard 3MF core packages.",
                    "Other formats, archives, previews, logos, ambiguous references and unrecognized free text require additional processing.",
                    "Embedded data and unsupported structures may carry identifiers. Local validation is structural; manual review is required.",
                    "References resolve against the input inventory. A target missing from the emitted corpus remains unavailable.",
