@@ -317,7 +317,25 @@ TYPED_STRINGS = (
 )
 
 
-def metadata(doc, alias, redact, write):
+def embedded_image_authors(doc, xref, alias, write):
+    if doc.xref_get_key(xref, "Subtype") != ("name", "/Image"):
+        return
+    _, image_filter = doc.xref_get_key(xref, "Filter")
+    if image_filter not in ("/DCTDecode", "[/DCTDecode]"):
+        return
+    original = doc.xref_stream_raw(xref)
+    if not original:
+        return
+    edited = jpeg_authors.transform(original, alias, meaningful, write)
+    if write and edited is not original:
+        params = doc.xref_get_key(xref, "DecodeParms")
+        doc.update_stream(xref, edited, compress=False)
+        doc.xref_set_key(xref, "Filter", image_filter)
+        if params[0] != "null":
+            doc.xref_set_key(xref, "DecodeParms", params[1])
+
+
+def metadata(doc, alias, redact, write, jpeg_metadata=False):
     pdf = library()
     typ, reference = doc.xref_get_key(-1, "Info")
     entry = None
@@ -348,18 +366,8 @@ def metadata(doc, alias, redact, write):
             if write and result != value:
                 doc.xref_set_key(entry, key, pdf.get_pdf_str(result))
     for xref in range(1, doc.xref_length()):
-        if doc.xref_get_key(xref, "Subtype") == ("name", "/Image"):
-            _, image_filter = doc.xref_get_key(xref, "Filter")
-            if image_filter in ("/DCTDecode", "[/DCTDecode]"):
-                original = doc.xref_stream_raw(xref)
-                if original:
-                    edited = jpeg_authors.transform(original, alias, meaningful, write)
-                    if write and edited is not original:
-                        params = doc.xref_get_key(xref, "DecodeParms")
-                        doc.update_stream(xref, edited, compress=False)
-                        doc.xref_set_key(xref, "Filter", image_filter)
-                        if params[0] != "null":
-                            doc.xref_set_key(xref, "DecodeParms", params[1])
+        if jpeg_metadata:
+            embedded_image_authors(doc, xref, alias, write)
         # PieceInfo stores application-private editing data. Illustrator and
         # prepress tools may include a complete extra copy of the artwork and
         # its source filename here. The PDF painting resources are separate.
@@ -623,7 +631,9 @@ def process(data, alias, redact, reference, write):
             if re.fullmatch(r"[0-9]{5,}", title)
             else None
         )
-        metadata(doc, alias, redact, write)
+        # Direct JPEG streams retain their APP1 signatures in the PDF bytes.
+        image_metadata = any(marker in data for marker in jpeg_authors.APP1)
+        metadata(doc, alias, redact, write, image_metadata)
         if not write:
             for value in (doc.metadata or {}).values():
                 if isinstance(value, str):
