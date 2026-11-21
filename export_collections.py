@@ -68,7 +68,7 @@ def write_package(folder, report):
         "python3 code/stream_corpus.py --manifest drawings.tsv --state /private/state --attempt /private/stage/attempt-2 "
         "--key-file /private/keys/alias.bin --archive /private/archive --learn-native --verify-pdfs --max-mib 128",
         f"python3 code/export_collections.py --checkpoint /private/state/checkpoint.sqlite3 --archive /private/archive "
-        f"--through-row {report['through']} --output /private/export/attempt-5",
+        f"--through-row {report['through']} --output /private/export/drawings",
     ]
     (folder / "README.txt").write_text("\n".join(text) + "\n", encoding="utf-8")
 

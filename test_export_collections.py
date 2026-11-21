@@ -47,6 +47,7 @@ class ExportCollections(unittest.TestCase):
             self.assertTrue((export / "code/export_collections.py").is_file())
             report = (export / "README.txt").read_text()
             self.assertIn("Selected 2 inputs", report)
+            self.assertIn("--through-row 3 --output /private/export/drawings", report)
             self.assertNotIn("sources/provider/one", report)
             model.write_bytes(b"X" * len(payload))
             cmd[-1] = str(root / "corrupt")
