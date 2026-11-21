@@ -25,7 +25,7 @@ import sat
 import svg
 import vrml
 import workers as file_workers
-from naming import DIMENSION, canonical, engineering_directory, path_identities, structural
+from naming import DIMENSION, canonical, engineering_directory, path_identities, repository_alias, repository_parts, structural
 
 
 HANDLERS = {".step": step, ".stp": step, ".dxf": dxf, ".stl": mesh, ".pdf": drawing_pdf,
@@ -40,6 +40,7 @@ class Identities:
     def __init__(self, key):
         self.key = key
         self.preserve_directories = True
+        self.link_repositories = True
         self.words = {}
         self.replacements = {}
         self.hosts = {}
@@ -100,9 +101,9 @@ class Identities:
         dimensions = [m[0].replace("µ", "u").replace("×", "x") for m in DIMENSION.finditer(name)]
         return " ".join(["Anon-" + digest, *dimensions])
 
-    def learn(self, value):
+    def learn(self, value, *, allow_structural=False):
         word = canonical(value)
-        if len(word) < 3 or not any(c.isalpha() for c in word) or structural(word) or word in step.NEUTRAL:
+        if len(word) < 3 or not any(c.isalpha() for c in word) or (not allow_structural and structural(word)) or word in step.NEUTRAL:
             return
         node = self.words
         for char in word:
@@ -194,6 +195,10 @@ class PathIndex:
     def part(self, value, directory, parents=()):
         suffix = "" if directory else PurePosixPath(value).suffix
         stem = value[:-len(suffix)] if suffix else value
+        if directory and self.ids.link_repositories:
+            joined = repository_parts(stem, parents)
+            if joined:
+                return repository_alias(joined, self.ids.alias)
         preserve = structural(stem) or (directory and self.ids.preserve_directories and engineering_directory(stem, parents))
         component = stem if preserve else self.ids.alias(stem)
         # Website aliases have a URI form inside documents. Use the same host
@@ -306,7 +311,7 @@ def run(input_dir, attempt, key_file, limit, workers=1):
         _write_code(staged)
         report = [
             "Machina CAD De-ID", "", pdf_identity.CONTACT_REPORT, pdf_identity.STEP_CONTACT_REPORT, pdf_identity.SHEET_REPORT,
-            pdf_identity.DIRECTORY_REPORT, pdf_identity.MODEL_REPORT,
+            pdf_identity.DIRECTORY_REPORT, pdf_identity.REPOSITORY_REPORT, pdf_identity.MODEL_REPORT,
             "Reproduce on Python 3.12: install PDF support with python3 -m pip install -r code/requirements.txt. Install ExifTool 13.55 on PATH for tagged embedded JPEGs.",
             "python3 code/pipeline.py --input /private/input --attempt /private/new/attempt-1 --key-file /private/key.bin",
             f"This run used --max-mib {limit // (1024 * 1024)} --workers {workers}. Supply the same 32-byte private key and input snapshot.",

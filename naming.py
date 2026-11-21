@@ -214,6 +214,34 @@ ENGINEERING_DIRECTORIES = frozenset("""
 }
 
 
+# The corpus packs a GitHub owner and repository into one directory. Restrict
+# parsing to the provider prefix and unambiguous pairs of valid components.
+GITHUB_OWNER = re.compile(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\Z")
+GITHUB_REPO = re.compile(r"[A-Za-z0-9._-]{1,100}\Z")
+
+
+def repository_parts(value, parents):
+    if len(parents) < 2 or tuple(part.casefold() for part in parents[-2:]) != ("sources", "github"):
+        return None
+    pieces = value.split("__")
+    if len(pieces) != 2:
+        return None
+    owner, repo = pieces
+    if (len(owner) > 39 or not GITHUB_OWNER.fullmatch(owner) or
+            not GITHUB_REPO.fullmatch(repo) or repo in {".", ".."}):
+        return None
+    return owner, repo
+
+
+def repository_alias(parts, alias):
+    # Individual aliases may have a URL form. Encode separators so the joined
+    # pair remains a single directory in physical paths and PDF titles alike.
+    def component(value):
+        name = alias(value).removeprefix("https://").removeprefix("http://")
+        return name.replace("?ref=", "-ref-").replace("/", "%2F").replace(chr(92), "%5C")
+    return "__".join(component(value) for value in parts)
+
+
 def engineering_directory(value, parents):
     name = re.sub(r"[ _-]+", " ", canonical(value))
     if name not in ENGINEERING_DIRECTORIES:

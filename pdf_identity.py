@@ -5,7 +5,7 @@ from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 import re
 
-from naming import canonical, engineering_directory, structural
+from naming import canonical, engineering_directory, repository_alias, repository_parts, structural
 
 
 # Only an email address, an HTTP(S) address, or an explicit www host supplies
@@ -14,6 +14,7 @@ CONTACT_REPORT = "Contact domains share pseudonyms across email, web links and v
 STEP_CONTACT_REPORT = "STEP header authors and organizations contribute contact domains."
 SHEET_REPORT = "Numbered PDF sheet titles preserve inventory-confirmed drawing and model pseudonyms."
 DIRECTORY_REPORT = "Conventional engineering directories are retained in artifact paths."
+REPOSITORY_REPORT = "GitHub owner and repository names retain separate pseudonyms in source paths."
 MODEL_REPORT = "Drawing filename descriptors are retained with their adjacent model pseudonyms."
 SHEET_TITLE = re.compile(
     r"(?P<base>[^/\\\r\n]{1,200}?)"
@@ -82,10 +83,13 @@ def asset(value):
     return parts[:-1], name.stem, name.suffix
 
 
-def asset_title(value, alias, preserve_directories=None):
+def asset_title(value, alias, preserve_directories=None, link_repositories=None):
     folders, stem, extension = asset(value)
     if preserve_directories is None:
         preserve_directories = getattr(getattr(alias, "__self__", None), "preserve_directories", True)
+
+    if link_repositories is None:
+        link_repositories = getattr(getattr(alias, "__self__", None), "link_repositories", True)
 
     def component(part):
         if (
@@ -98,8 +102,16 @@ def asset_title(value, alias, preserve_directories=None):
             return part
         return alias(part)
 
-    parts = [part if preserve_directories and engineering_directory(part, folders[:i]) else component(part)
-             for i, part in enumerate(folders)]
+    parts = []
+    for i, part in enumerate(folders):
+        parents = folders[:i]
+        joined = repository_parts(part, parents) if link_repositories else None
+        if joined:
+            parts.append(repository_alias(joined, alias))
+        elif preserve_directories and engineering_directory(part, parents):
+            parts.append(part)
+        else:
+            parts.append(component(part))
     return "/".join([*parts, component(stem) + extension])
 
 
@@ -128,6 +140,7 @@ def restore_directory_forms(root, attempt, paths, ids):
     has_directory_reader = packaged_naming.is_file() and (
         "\ndef engineering_directory(" in packaged_naming.read_text(encoding="utf-8")
     )
+    ids.link_repositories = False
     ids.preserve_directories = has_directory_reader
     if not (attempt / "code" / "pdf_identity.py").is_file():
         return
@@ -138,6 +151,7 @@ def restore_directory_forms(root, attempt, paths, ids):
     report = attempt / "README.txt"
     contents = report.read_text(encoding="utf-8") if report.is_file() else ""
     lines = contents.splitlines()
+    ids.link_repositories = REPOSITORY_REPORT in lines
     ids.preserve_directories = DIRECTORY_REPORT in lines or has_directory_reader
     use_hosts = CONTACT_REPORT in lines
     use_step = STEP_CONTACT_REPORT in lines
@@ -316,5 +330,21 @@ def resolve(forms, ids, paths=(), *, link_models=True):
                 for title in sorted(sheets.pop(base)):
                     suffix = SHEET_TITLE.fullmatch(title)["suffix"]
                     ids.replacements[canonical(title)] = ids.alias(base) + suffix
+    if ids.link_repositories:
+        # Distinct complete directories let us register each owner/project once.
+        directories = set()
+        for path in paths:
+            pieces = path.parts
+            for i in range(2, len(pieces) - 1):
+                if pieces[i - 1].casefold() == "github" and pieces[i - 2].casefold() == "sources":
+                    directories.add(pieces[i])
+        for joined in sorted(directories):
+            parts = repository_parts(joined, ("sources", "github"))
+            if parts:
+                ids.replacements[canonical(joined)] = repository_alias(parts, ids.alias)
+                ids.learn(joined, allow_structural=True)
+        for title in sorted(titles):
+            if "__" in title:
+                ids.replacements[canonical(title)] = asset_title(title, ids.alias)
     for spelling in sorted(ids.replacements):
         ids.learn(spelling)
