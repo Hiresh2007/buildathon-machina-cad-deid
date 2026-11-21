@@ -325,6 +325,7 @@ def docs(db, args, index):
         out.write(pipeline.pdf_identity.SHEET_REPORT + "\n")
         out.write(pipeline.pdf_identity.DIRECTORY_REPORT + "\n")
         out.write(pipeline.pdf_identity.REPOSITORY_REPORT + "\n")
+        out.write(pipeline.pdf_identity.REPOSITORY_FOLDER_REPORT + "\n")
         out.write(pipeline.pdf_identity.MODEL_REPORT + "\n")
         out.write("Install ExifTool 13.55 on PATH to read and rewrite tagged JPEG authors.\n")
         out.write("Use code/STREAMING.md to reproduce. Install dependencies listed in code/.\n")

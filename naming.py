@@ -242,7 +242,7 @@ def repository_alias(parts, alias):
     return "__".join(component(value) for value in parts)
 
 
-def engineering_directory(value, parents):
+def engineering_directory(value, parents, repository_folders=True):
     name = re.sub(r"[ _-]+", " ", canonical(value))
     if name not in ENGINEERING_DIRECTORIES:
         return False
@@ -251,6 +251,9 @@ def engineering_directory(value, parents):
         return False
     if len(parents) in {2, 3} and canonical(parents[0]) == "sources":
         provider = canonical(parents[1])
+        if (repository_folders and len(parents) == 3 and provider == "github"
+                and repository_parts(parents[2], parents[:2])):
+            return True
         if provider in {"github", "gitlab", "grabcad"} or (provider == "web" and len(parents) == 2):
             return False
     return True

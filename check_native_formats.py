@@ -429,7 +429,7 @@ def check_identities(before, after, ids, counts):
                 if b.metadata.get(key) != ids.alias(value):
                     raise ValueError("metadata value does not match its pseudonym")
                 neutral_filename = key == "title" and pdf_identity.asset(value) and (
-                    pdf_identity.asset_title(value, lambda part: "\0", ids.preserve_directories, ids.link_repositories) == value
+                    pdf_identity.asset_title(value, lambda part: "\0", ids.preserve_directories, ids.link_repositories, ids.preserve_repository_folders) == value
                 )
                 if len(value) >= 4 and not neutral_filename:
                     originals.add(value)

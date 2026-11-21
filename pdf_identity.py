@@ -15,6 +15,7 @@ STEP_CONTACT_REPORT = "STEP header authors and organizations contribute contact 
 SHEET_REPORT = "Numbered PDF sheet titles preserve inventory-confirmed drawing and model pseudonyms."
 DIRECTORY_REPORT = "Conventional engineering directories are retained in artifact paths."
 REPOSITORY_REPORT = "GitHub owner and repository names retain separate pseudonyms in source paths."
+REPOSITORY_FOLDER_REPORT = "Generic engineering folders directly inside a GitHub project retain their names."
 MODEL_REPORT = "Drawing filename descriptors are retained with their adjacent model pseudonyms."
 SHEET_TITLE = re.compile(
     r"(?P<base>[^/\\\r\n]{1,200}?)"
@@ -83,13 +84,16 @@ def asset(value):
     return parts[:-1], name.stem, name.suffix
 
 
-def asset_title(value, alias, preserve_directories=None, link_repositories=None):
+def asset_title(value, alias, preserve_directories=None, link_repositories=None, repository_folders=None):
     folders, stem, extension = asset(value)
     if preserve_directories is None:
         preserve_directories = getattr(getattr(alias, "__self__", None), "preserve_directories", True)
 
     if link_repositories is None:
         link_repositories = getattr(getattr(alias, "__self__", None), "link_repositories", True)
+
+    if repository_folders is None:
+        repository_folders = getattr(getattr(alias, "__self__", None), "preserve_repository_folders", True)
 
     def component(part):
         if (
@@ -108,7 +112,7 @@ def asset_title(value, alias, preserve_directories=None, link_repositories=None)
         joined = repository_parts(part, parents) if link_repositories else None
         if joined:
             parts.append(repository_alias(joined, alias))
-        elif preserve_directories and engineering_directory(part, parents):
+        elif preserve_directories and engineering_directory(part, parents, repository_folders):
             parts.append(part)
         else:
             parts.append(component(part))
@@ -141,6 +145,7 @@ def restore_directory_forms(root, attempt, paths, ids):
         "\ndef engineering_directory(" in packaged_naming.read_text(encoding="utf-8")
     )
     ids.link_repositories = False
+    ids.preserve_repository_folders = False
     ids.preserve_directories = has_directory_reader
     if not (attempt / "code" / "pdf_identity.py").is_file():
         return
@@ -152,6 +157,7 @@ def restore_directory_forms(root, attempt, paths, ids):
     contents = report.read_text(encoding="utf-8") if report.is_file() else ""
     lines = contents.splitlines()
     ids.link_repositories = REPOSITORY_REPORT in lines
+    ids.preserve_repository_folders = REPOSITORY_FOLDER_REPORT in lines
     ids.preserve_directories = DIRECTORY_REPORT in lines or has_directory_reader
     use_hosts = CONTACT_REPORT in lines
     use_step = STEP_CONTACT_REPORT in lines

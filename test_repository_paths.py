@@ -38,6 +38,24 @@ class RepositoryPaths(unittest.TestCase):
         self.assertEqual(posixpath.normpath(posixpath.join(posixpath.dirname(index.targets[names[0]]), rewritten)), index.targets[names[1]])
         self.assertEqual(ids.redact_text("Use the model and CAD drawings"), "Use the model and CAD drawings")
 
+    def test_named_artifact_directory_inside_known_project(self):
+        ids = Identities(bytes(32))
+        names = ["sources/github/AtlasLab__Pump/Technical Drawings/model.step",
+                 "sources/github/AtlasLab__Pump/Fictional Client/model.step",
+                 "sources/github/AtlasLab__Pump/photos.step",
+                 "sources/github/AtlasLab/pdfs/model.step"]
+        paths = list(map(PurePosixPath, names))
+        resolve([], ids, paths)
+        index = PathIndex(paths, ids)
+        self.assertEqual(PurePosixPath(index.targets[names[0]]).parts[3], "Technical Drawings")
+        self.assertNotIn("Fictional Client", index.targets[names[1]])
+        self.assertNotIn("pdfs", index.targets[names[3]])
+        self.assertEqual(asset_title(names[0], ids.alias), index.targets[names[0]])
+        ids.preserve_repository_folders = False
+        previous = PathIndex(paths, ids)
+        self.assertNotIn("Technical Drawings", previous.targets[names[0]])
+        self.assertEqual(asset_title(names[0], ids.alias), previous.targets[names[0]])
+
     def test_unknown_layout_and_old_attempt(self):
         for raw, parents in [
             ("User__Repo", ("sources", "web")), ("User__Repo", ("private", "github")),
