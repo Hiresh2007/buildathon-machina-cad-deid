@@ -19,6 +19,7 @@ import trimesh
 from drawing_pdf import meaningful
 from naming import structural
 from pipeline import Identities, PathIndex
+import pdf_identity
 
 
 UNITS = re.compile(
@@ -267,7 +268,10 @@ def check_identities(before, after, ids, counts):
             ):
                 if b.metadata.get(key) != ids.alias(value):
                     raise ValueError("metadata value does not match its pseudonym")
-                if len(value) >= 4:
+                neutral_filename = key == "title" and pdf_identity.asset(value) and (
+                    pdf_identity.asset_title(value, lambda part: "\0") == value
+                )
+                if len(value) >= 4 and not neutral_filename:
                     originals.add(value)
         text = "\n".join(p.get_text() for p in b)
         if any(value in text for value in originals):
@@ -304,6 +308,7 @@ def main():
         for p in args.input.rglob("*")
         if p.is_file() or p.is_symlink()
     ]
+    pdf_identity.restore_directory_forms(args.input, args.attempt, paths, ids)
     index = PathIndex(paths, ids)
     counts, defects = collections.Counter(), []
     logging.getLogger("pypdf").setLevel(logging.ERROR)

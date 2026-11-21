@@ -35,6 +35,8 @@ def main():
         "e.pdf": document(r"SOUTH\operator9 (DESK-7)", "plain", ["Author: operator9"]),
         "f.pdf": document("operator9", "plain", ["Author: operator9"]),
         "g.pdf": document("unrelated", "plain", ["North Pin.sldprt", "Tolerance 0.02 mm"]),
+        "h.pdf": document("unrelated", "plain", ['Model file: "Caldera Panel.sldprt"', "ZX-42.idw"]),
+        "i.pdf": document("unrelated", "bracket.sldprt", ["Caldera Panel.sldprt", "bracket.sldprt"]),
     }
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -97,6 +99,14 @@ def main():
         assert outputs["a.pdf"][0]["title"].endswith("/models/" + stem + ".slddrw")
         assert outputs["b.pdf"][0]["title"] == stem + ".sldprt"
         assert stem + ".sldprt" in outputs["g.pdf"][1]
+        panel = ids.alias("Caldera Panel") + ".sldprt"
+        assert panel in outputs["h.pdf"][1] and panel in outputs["i.pdf"][1]
+        assert ids.alias("ZX-42") + ".idw" in outputs["h.pdf"][1]
+        assert outputs["i.pdf"][0]["title"] == "bracket.sldprt"
+        assert "bracket.sldprt" in outputs["i.pdf"][1]
+        restored = Identities(key)
+        pdf_identity.restore_directory_forms(cache, direct, list(map(Path, source)), restored)
+        assert restored.replacements == ids.replacements
         assert "Length 25 mm" in outputs["a.pdf"][1] and "Tolerance 0.02 mm" in outputs["g.pdf"][1]
         assert (direct / "code/pdf_identity.py").is_file()
     print("Typed account, conflicting domain, linked model title, physical text and resume checks passed.")

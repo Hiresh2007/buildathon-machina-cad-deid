@@ -444,6 +444,11 @@ def matches(text, redactor, alias, strong=False, numeric_title=None):
         start, end = match.span("value")
         role = "person" if match["label"].casefold() in PERSON_LABELS else ""
         yield start, end, pdf_identity.typed(role, match["value"], alias)
+    elif location := pdf_identity.visible_asset(text):
+        start, end = location
+        replacement = pdf_identity.typed("title", text[start:end], alias)
+        if replacement != text[start:end]:
+            yield start, end, replacement
     else:
         general = list(redactor.matches(text))
         if numeric_title:
@@ -697,6 +702,9 @@ def process(data, alias, redact, reference, write):
                     if match and meaningful(match["value"]):
                         role = "person" if match["label"].casefold() in PERSON_LABELS else ""
                         pdf_identity.typed(role, match["value"], alias)
+                    elif location := pdf_identity.visible_asset(text):
+                        start, end = location
+                        pdf_identity.typed("title", text[start:end], alias)
         if write:
             for i, (_, title, _) in enumerate(doc.get_toc()):
                 changed = redact(title)

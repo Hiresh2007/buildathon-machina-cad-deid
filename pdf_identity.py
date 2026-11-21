@@ -26,6 +26,11 @@ ASSET = re.compile(
 )
 GENERIC = {"admin", "administrator", "root", "user", "default", "guest", "owner", "operator", "public", "cad"}
 SYSTEM_FOLDERS = {"users", "home", "desktop", "documents", "documents and settings", "program files"}
+FILE_LABEL = re.compile(
+    r"^\s*(?:file\s?name|source file|cad file|model file|drawing file|model|drawing|part file)\s*[:=]\s*",
+    re.I,
+)
+PATH_PREFIX = re.compile(r"^(?:[a-z]:[\\/]|\\\\|\.\.?[\\/]|/(?:home|Users)/)", re.I)
 
 
 def account(value):
@@ -69,6 +74,48 @@ def asset_title(value, alias):
         return alias(part)
 
     return "/".join([*(component(part) for part in folders), component(stem) + extension])
+
+
+def visible_asset(text):
+    """Recognize a full CAD filename, an explicit file cell or a native CAD path."""
+    marker = FILE_LABEL.match(text)
+    left = marker.end() if marker else len(text) - len(text.lstrip())
+    right = len(text.rstrip())
+    if right > left + 2 and text[left] in {"'", '"'} and text[left] == text[right - 1]:
+        left += 1
+        right -= 1
+        quoted = True
+    else:
+        quoted = False
+    name = text[left:right]
+    if asset(name) and (marker or quoted or PATH_PREFIX.match(name) or re.fullmatch(r"[\w.+-]+", name)):
+        return left, right
+    return None
+
+
+def restore_directory_forms(root, attempt, paths, ids):
+    """Rebuild the private evidence used by a separately invoked attempt verifier."""
+    if not (attempt / "code" / "pdf_identity.py").is_file():
+        return
+    import drawing_pdf
+
+    limit = 64 * 1024 * 1024
+    report = attempt / "README.txt"
+    if report.is_file():
+        cap = re.search(r"(?:--max-mib\s+|Input size ceiling:\s*)(\d+)", report.read_text(encoding="utf-8"))
+        if cap and int(cap[1]) > 0:
+            limit = int(cap[1]) * 1024 * 1024
+    forms = set()
+    for path in paths:
+        source = root / path
+        if path.suffix.lower() != ".pdf" or source.is_symlink():
+            continue
+        try:
+            if source.stat().st_size <= limit:
+                forms.update(drawing_pdf.discover(source.read_bytes()).forms)
+        except (OSError, ValueError):
+            continue
+    resolve(forms, ids)
 
 
 class Observations(set):

@@ -47,7 +47,10 @@ def geometry(path):
 def check(root, attempt, key_file):
     key = key_file.read_bytes()
     paths = [p.relative_to(root) for p in root.rglob("*") if p.is_file() or p.is_symlink()]
-    mappings = PathIndex(paths, Identities(key))
+    from pdf_identity import restore_directory_forms
+    ids = Identities(key)
+    restore_directory_forms(root, attempt, paths, ids)
+    mappings = PathIndex(paths, ids)
     compared = geometry_bearing = failures = 0
     for name in paths:
         if name.suffix.lower() not in {".step", ".stp"}:

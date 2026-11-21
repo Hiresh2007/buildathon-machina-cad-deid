@@ -11,6 +11,7 @@ import tempfile
 
 from check_native_formats import check_pdf
 from pipeline import Identities, PathIndex
+import pdf_identity
 
 
 def digest(path):
@@ -31,6 +32,7 @@ def screen(source, attempt, hold, key):
     original = baseline.read_text()
     ids = Identities(key.read_bytes())
     paths = sorted(p.relative_to(source) for p in source.rglob('*') if p.is_file() or p.is_symlink())
+    pdf_identity.restore_directory_forms(source, attempt, paths, ids)
     index = PathIndex(paths, ids)
     failures = []
     counts = Counter()
