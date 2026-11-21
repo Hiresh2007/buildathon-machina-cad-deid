@@ -378,7 +378,8 @@ def metadata(doc, alias, redact, write):
             xref, "Subtype"
         )[1] in {"/RichMedia", "/3D"}:
             raise UnsupportedPDF("PDF contains active scripts or embedded 3D media")
-        if doc.xref_get_key(xref, "AF")[0] != "null":
+        associated = doc.xref_get_key(xref, "AF")
+        if associated not in (("null", "null"), ("array", "[]")):
             raise UnsupportedPDF("PDF associated-file relationship")
         # Alternate text and accessibility strings may repeat visible identifiers.
         for key in ("ActualText", "Alt", "TU"):

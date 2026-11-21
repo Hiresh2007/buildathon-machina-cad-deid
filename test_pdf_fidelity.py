@@ -16,7 +16,7 @@ from check_native_formats import (
     measurements,
 )
 from pipeline import Identities
-from drawing_pdf import discover, UnsupportedPDF
+from drawing_pdf import discover, rewrite, UnsupportedPDF
 
 
 def drawing(changed_geometry=False, caption="test caption"):
@@ -45,6 +45,26 @@ class PDFFidelity(unittest.TestCase):
             source = doc.tobytes()
         with self.assertRaisesRegex(UnsupportedPDF, "no readable stream"):
             discover(source)
+
+    def test_empty_associated_file_array(self):
+        with pymupdf.open(stream=drawing(caption="Depth 12mm")) as doc:
+            doc.set_metadata({"author": "Fixture Owner"})
+            doc.xref_set_key(doc.pdf_catalog(), "AF", "[  ]")
+            source = doc.tobytes()
+            attachment = doc.get_new_xref()
+            doc.update_object(attachment, "<< /Type /Filespec /F (sample.step) >>")
+            doc.xref_set_key(doc.pdf_catalog(), "AF", f"[{attachment} 0 R]")
+            associated = doc.tobytes()
+
+        identities = Identities(bytes(32))
+        for value in discover(source):
+            identities.learn(value)
+        output = rewrite(source, identities.alias, identities, lambda path: path)
+        check_pdf(source, output, identities, collections.Counter())
+        with pymupdf.open(stream=output) as doc:
+            self.assertEqual(doc.xref_get_key(doc.pdf_catalog(), "AF"), ("array", "[]"))
+        with self.assertRaisesRegex(UnsupportedPDF, "associated-file relationship"):
+            discover(associated)
 
     def test_geometry_plane(self):
         with closing(pdfium.PdfDocument(drawing())) as doc, closing(doc[0]) as page:
