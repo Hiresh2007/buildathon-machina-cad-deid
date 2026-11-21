@@ -24,7 +24,42 @@ def document(author, title, visible):
         return doc.tobytes(no_new_id=True)
 
 
+def check_drawing_cells():
+    pdf = drawing_pdf.library()
+    ids = Identities(b"fixture-only identity key")
+    rows = [
+        ("Gezeichnet", "Marin Keller"),
+        ("Dibujado por", "Eva Rios"),
+        ("Chkd", "ZK"),
+        ("DWG NO.", "QV-2740"),
+        ("Drawing number", "9001"),
+        ("Part number", "M12"),
+        ("Part number", "ISO-2768"),
+    ]
+    with pdf.open() as doc:
+        page = doc.new_page()
+        for i, (label, value) in enumerate(rows):
+            y = 60 + 35 * i
+            page.insert_text((40, y), label, fontsize=9)
+            page.insert_text((51 + pdf.get_text_length(label, fontsize=9), y), value, fontsize=9)
+        doc.set_metadata({"title": "fixture"})
+        page.draw_line((25, 350), (225, 350))
+        data = doc.tobytes()
+    found = drawing_pdf.discover(data)
+    assert {value for _, value in rows[:4]} <= found
+    assert not {value for _, value in rows[4:]} & found
+    for value in found:
+        ids.learn(value)
+    output = drawing_pdf.rewrite(data, ids.alias, ids, lambda p: p)
+    with pdf.open(stream=output) as doc:
+        text = doc[0].get_text()
+        assert all(ids.alias(value) in text and value not in text for _, value in rows[:4])
+        assert all(value in text for _, value in rows[4:])
+        assert doc[0].get_drawings()
+
+
 def main():
+    check_drawing_cells()
     source = {
         "a.pdf": document(
             r"NORTH\mquill (DESK-1)", r"C:\models\North Pin.slddrw", ["Drawn by: mquill", "Length 25 mm"]

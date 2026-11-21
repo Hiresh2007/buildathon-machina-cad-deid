@@ -66,7 +66,31 @@ PERSON_LABELS = {
     "designed by",
     "author",
 }
+PERSON_CELL_LABELS = PERSON_LABELS | {
+    "drwn by", "dwn by", "drn", "drawn.", "designed", "designer", "prepared by",
+    "chk by", "chkd", "chk'd", "checked.", "app'd", "approved.",
+    "gezeichnet", "gezeichnet von", "gez.", "geprüft", "geprüft von", "gepr.",
+    "bearbeitet", "bearb.", "erstellt von", "konstrukteur",
+    "dibujado", "dibujado por", "revisado", "revisado por", "aprobado",
+    "aprobado por", "diseñado por", "autor", "disegnato da", "disegnatore",
+    "verificato da", "approvato da", "desenhado por", "desenhista", "aprovado por",
+    "dessiné par", "vérifié par", "approuvé par", "dessinateur", "auteur",
+}
 COMPANY_LABELS = {"company", "customer", "client", "organization"}
+COMPANY_CELL_LABELS = COMPANY_LABELS | {"organisation", "manufacturer", "firma", "kunde",
+                                        "société", "entreprise", "empresa", "cliente", "azienda"}
+DRAWING_CELL_LABELS = {
+    "drawing no", "drawing no.", "drawing number", "drawing id", "drawing #",
+    "dwg. no.", "dwg no.", "dwg no", "dwg. no", "dwg #", "drg no.", "drg no",
+    "part number", "part no.", "part no", "part #", "p/n",
+    "zeichnungsnummer", "zeichnungs-nr.", "n° plan", "n° dessin", "numero disegno",
+}
+CELL_ROLES = {**dict.fromkeys(PERSON_CELL_LABELS, "person"),
+              **dict.fromkeys(COMPANY_CELL_LABELS, "organization"),
+              **dict.fromkeys(DRAWING_CELL_LABELS, "drawing number")}
+# A neighboring integer or compact alphanumeric identifier can be a drawing
+# number. Exclude dimensions, material grades, dates and scale notation.
+DRAWING_CODE = re.compile(r"(?=.{4,45}\Z)(?=.*\d)[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*\Z")
 CORPORATE = re.compile(
     r"^[^\d\n:;]{2,64}\b(?:inc\.?|ltd\.?|limited|llc|gmbh|corp\.?|corporation|s\.?a\.?r\.?l\.?)$",
     re.I,
@@ -376,10 +400,12 @@ def lines(page):
                 yield text, spans, line["dir"]
 
 
-def title_fields(records):
-    """Recognize an explicit author or client cell and a tightly aligned neighboring value."""
+def title_fields(records, document_title=""):
+    """Pair explicit title-block labels with one tightly aligned, unambiguous value."""
     pdf = library()
     result = {}
+    asset = pdf_identity.asset(document_title)
+    title = (asset[1] if asset else document_title).strip().casefold()
     boxes = [
         pdf.Rect(
             min(c["bbox"][0] for c, _ in chars),
@@ -393,7 +419,8 @@ def title_fields(records):
         plain = text.strip().rstrip(":").casefold()
         if CORPORATE.fullmatch(text.strip()):
             result[index] = "organization"
-        if plain not in PERSON_LABELS | COMPANY_LABELS or direction[0] < 0.98:
+        role = CELL_ROLES.get(plain)
+        if role is None or direction[0] < 0.98:
             continue
         label = boxes[index]
         choices = []
@@ -408,20 +435,21 @@ def title_fields(records):
                 .replace("'", " ")
                 .split()
             )
-            if not (
-                1 <= len(words) <= 4
-                and 2 <= len(value) <= 54
-                and all(w.isalpha() for w in words)
-            ):
-                continue
-            if any(
-                w.casefold() in TECHNICAL
-                or w.casefold() in PERSON_LABELS | COMPANY_LABELS
-                for w in words
-            ):
-                continue
-            if len(words) == 1 and not (2 <= len(value) <= 4 and value.isupper()):
-                continue
+            if role == "drawing number":
+                if (not DRAWING_CODE.fullmatch(value) or structural(value)
+                        or (not any(c.isalpha() for c in value) and value.casefold() != title)
+                        or re.fullmatch(r"(?:19|20)\d{2}(?:[-_]\d{1,2}){0,2}", value)
+                        or re.fullmatch(r"(?:AISI|ASTM|DIN|ISO|UNS|SAE)[-_]?\d+", value, re.I)
+                        or value.casefold().startswith("anon-")):
+                    continue
+            else:
+                if not (1 <= len(words) <= 4 and 2 <= len(value) <= 54 and all(w.isalpha() for w in words)):
+                    continue
+                if (value.casefold() in CELL_ROLES or any(w.casefold() in TECHNICAL for w in words)
+                        or structural(value)):
+                    continue
+                if len(words) == 1 and not (2 <= len(value) <= 4 and value.isupper()):
+                    continue
             box = boxes[j]
             h = max(label.height, box.height)
             dx, dy = box.x0 - label.x1, box.y0 - label.y0
@@ -431,7 +459,7 @@ def title_fields(records):
                 choices.append((1.4 + dy / h, j))
         choices.sort()
         if choices and (len(choices) == 1 or choices[1][0] - choices[0][0] > 0.6):
-            result[choices[0][1]] = "person" if plain in PERSON_LABELS else "organization"
+            result[choices[0][1]] = role
     return result
 
 
@@ -462,11 +490,11 @@ def matches(text, redactor, alias, strong=False, numeric_title=None):
         yield from sorted(general)
 
 
-def redact_page(page, alias, redactor, numeric_title):
+def redact_page(page, alias, redactor, numeric_title, source_title=""):
     pdf = library()
     drawings = []
     records = list(lines(page))
-    strong = title_fields(records)
+    strong = title_fields(records, source_title)
     for i, (text, spans, direction) in enumerate(records):
         for start, stop, replacement in matches(
             text, redactor, alias, strong.get(i), numeric_title
@@ -691,10 +719,10 @@ def process(data, alias, redact, reference, write):
                         if result != link[key]:
                             link[key] = result
                             page.update_link(link)
-                redact_page(page, alias, redact, numeric_title)
+                redact_page(page, alias, redact, numeric_title, title)
             else:
                 records = list(lines(page))
-                strong = title_fields(records)
+                strong = title_fields(records, title)
                 for i, (text, _, _) in enumerate(records):
                     if i in strong:
                         pdf_identity.typed(strong[i], text.strip(), alias)
