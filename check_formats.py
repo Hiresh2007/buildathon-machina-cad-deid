@@ -20,9 +20,24 @@ def pdf_fixture():
     p.insert_text((14, 60), "Author: Morgan Quill")
     p.insert_text((14, 85), "Bore 12.50 mm   Morgan Quill   tolerance 0.02 mm")
     p.insert_text((240, 220), "Morgan Quill", rotate=90)
+    private_copy = doc.get_new_xref()
+    doc.update_object(private_copy, "<<>>")
+    doc.update_stream(
+        private_copy, b"%!PS-Adobe-3.0\n%%Title: Vega Assembly.pdf\nMorgan Quill"
+    )
+    doc.xref_set_key(
+        p.xref, "PieceInfo", f"<</Illustrator<</Private {private_copy} 0 R>>>>"
+    )
+    doc.xref_set_key(p.xref, "Author", pdf.get_pdf_str("Morgan Quill"))
     doc.set_metadata(
         {"author": "Morgan Quill", "title": "Vega Assembly", "producer": "CAD export"}
     )
+    number_tree = doc.get_new_xref()
+    doc.update_object(
+        number_tree,
+        "<</Limits[0 0]/Nums[0<</S/r/St 3/P<FEFF005600650067006100200041007300730065006D0062006C0079>>>]>>",
+    )
+    doc.xref_set_key(doc.pdf_catalog(), "PageLabels", f"<</Kids[{number_tree} 0 R]>>")
     doc.set_xml_metadata(
         '<x:xmpmeta xmlns:x="adobe:ns:meta/" xmlns:dc="http://purl.org/dc/elements/1.1/" '
         'xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:RDF><rdf:Description>'
@@ -72,6 +87,17 @@ def main():
         assert "Morgan" not in text and text.count(author) >= 3, text
         assert "Bore 12.50 mm" in text and "tolerance 0.02 mm" in text, text
         assert doc.metadata["author"] == author and author in doc.get_xml_metadata()
+        assert doc.xref_get_key(p.xref, "PieceInfo")[0] == "null"
+        assert doc.xref_get_key(p.xref, "Author") == ("string", author)
+        rules = doc.get_page_labels()
+        assert rules == [
+            {
+                "startpage": 0,
+                "prefix": ids.alias("Vega Assembly"),
+                "firstpagenum": 3,
+                "style": "r",
+            }
+        ]
         assert doc.get_toc()[0][1] == author and any(
             a.info["title"] == author for a in p.annots()
         )
@@ -98,6 +124,16 @@ def main():
                 b"Morgan Quill" not in contents
                 and "Morgan Quill".encode("utf-16-be") not in contents
             )
+    with pdf.open() as document:
+        page = document.new_page()
+        document.set_metadata({"title": "480237"})
+        page.insert_text((10, 50), "Drawing 480237")
+        page.insert_text((10, 90), "Length 480237 mm")
+        data = drawing_pdf.rewrite(document.tobytes(), ids.alias, ids, reference)
+        with pdf.open(stream=data) as saved:
+            text = saved[0].get_text()
+            assert ids.alias("480237") in text and text.count("480237") == 1
+            assert "480237 mm" in text
     binary = (
         b"Morgan Quill COLOR=\x10\x20\x30\xff".ljust(80, b"\0")
         + struct.pack("<I", 1)

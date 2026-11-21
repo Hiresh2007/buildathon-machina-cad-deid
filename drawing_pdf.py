@@ -217,12 +217,75 @@ def xmp(source, alias, redact):
     return dom.toxml()
 
 
+def page_labels(doc, source_title, alias, redact):
+    """Edit only /P strings in the native page-label number tree, including nested /Kids."""
+    native = library().mupdf
+    document = native.PdfDocument(doc.this)
+    catalog = native.pdf_dict_gets(native.pdf_trailer(document), "Root")
+    tree = [native.pdf_dict_gets(catalog, "PageLabels")]
+    remaining = 150000
+    visited = set()
+    explicit = (
+        len(source_title) >= 4
+        and meaningful(source_title)
+        and not structural(source_title)
+    )
+    while tree:
+        entry = tree.pop()
+        remaining -= 1
+        if remaining < 0:
+            raise UnsupportedPDF("oversized or cyclic PDF page-label tree")
+        if not native.pdf_is_dict(entry):
+            continue
+        number = native.pdf_to_num(entry)
+        if number:
+            if number in visited:
+                raise UnsupportedPDF("cyclic or duplicated PDF page-label tree")
+            visited.add(number)
+        children = native.pdf_dict_gets(entry, "Kids")
+        size = native.pdf_array_len(children)
+        if size > remaining:
+            raise UnsupportedPDF("oversized PDF page-label tree")
+        tree.extend(native.pdf_array_get(children, i) for i in range(size))
+        numbers = native.pdf_dict_gets(entry, "Nums")
+        size = native.pdf_array_len(numbers)
+        if size % 2 or size > remaining * 2:
+            raise UnsupportedPDF("invalid PDF page-label number array")
+        remaining -= size // 2
+        for i in range(1, size, 2):
+            rule = native.pdf_array_get(numbers, i)
+            prefix = native.pdf_dict_gets(rule, "P")
+            if not native.pdf_is_string(prefix):
+                continue
+            value = native.pdf_to_text_string(prefix)
+            if explicit and source_title in value:
+                updated = alias(source_title).join(
+                    redact(part) for part in value.split(source_title)
+                )
+            else:
+                updated = redact(value)
+            if updated != value:
+                native.pdf_dict_puts(rule, "P", native.pdf_new_text_string(updated))
+
+
+TYPED_STRINGS = (
+    "Author",
+    "Company",
+    "Organization",
+    "Organisation",
+    "Owner",
+    "Project",
+    "Title",
+)
+
+
 def metadata(doc, alias, redact, write):
     pdf = library()
     typ, reference = doc.xref_get_key(-1, "Info")
+    entry = None
+    standard = doc.metadata or {}
     if typ == "xref":
         entry = int(reference.split()[0])
-        standard = doc.metadata or {}
         keys = {
             "Title": "title",
             "Author": "author",
@@ -247,6 +310,24 @@ def metadata(doc, alias, redact, write):
             if write and result != value:
                 doc.xref_set_key(entry, key, pdf.get_pdf_str(result))
     for xref in range(1, doc.xref_length()):
+        # PieceInfo stores application-private editing data. Illustrator and
+        # prepress tools may include a complete extra copy of the artwork and
+        # its source filename here. The PDF painting resources are separate.
+        if write and doc.xref_get_key(xref, "PieceInfo")[0] != "null":
+            doc.xref_set_key(xref, "PieceInfo", "null")
+        if xref != entry:
+            for key in TYPED_STRINGS:
+                kind, value = doc.xref_get_key(xref, key)
+                if kind == "string":
+                    # Outline titles can be engineering navigation labels. A
+                    # repeated Info title is typed; redact other labels in context.
+                    changed = (
+                        redact(value)
+                        if key == "Title" and value != standard.get("title")
+                        else field(key, value, alias, redact)
+                    )
+                    if write and changed != value:
+                        doc.xref_set_key(xref, key, pdf.get_pdf_str(changed))
         if doc.xref_get_key(xref, "Type") == ("name", "/Metadata"):
             raw = doc.xref_stream(xref)
             if len(raw) > 4 * 1024 * 1024:
@@ -341,7 +422,7 @@ def title_fields(records):
     return result
 
 
-def matches(text, redactor, alias, strong=False):
+def matches(text, redactor, alias, strong=False, numeric_title=None):
     if strong:
         yield len(text) - len(text.lstrip()), len(text.rstrip()), alias(text.strip())
         return
@@ -350,16 +431,27 @@ def matches(text, redactor, alias, strong=False):
         start, end = match.span("value")
         yield start, end, alias(match["value"])
     else:
-        yield from redactor.matches(text)
+        general = list(redactor.matches(text))
+        if numeric_title:
+            # A numeric drawing number can also occur as a dimension on an
+            # unrelated drawing. Restrict this typed title to its own document.
+            for match in numeric_title.finditer(text):
+                if not any(
+                    a < match.end() and b > match.start() for a, b, _ in general
+                ):
+                    general.append((match.start(), match.end(), alias(match[0])))
+        yield from sorted(general)
 
 
-def redact_page(page, alias, redactor):
+def redact_page(page, alias, redactor, numeric_title):
     pdf = library()
     drawings = []
     records = list(lines(page))
     strong = title_fields(records)
     for i, (text, spans, direction) in enumerate(records):
-        for start, stop, replacement in matches(text, redactor, alias, i in strong):
+        for start, stop, replacement in matches(
+            text, redactor, alias, i in strong, numeric_title
+        ):
             selected = spans[start:stop]
             char, style = selected[0]
             dx, dy = direction
@@ -456,7 +548,21 @@ def replace_attachment(doc, annot, filename, payload, description):
 
 def process(data, alias, redact, reference, write):
     with document(data) as doc:
+        title = ((doc.metadata or {}).get("title") or "").strip()
+        numeric_title = (
+            re.compile(
+                r"(?<![\w.])(?<![0-9],)"
+                + re.escape(title)
+                + r"(?![\w.]|,[0-9]|\s*(?:[×x]\s*[0-9]|[°\x22\x27]|"
+                r"(?:mm|cm|[µu]m|m|inch(?:es)?|in|ft|kg|g|deg(?:rees)?|kN|Nm|rpm|mpa|psi)\b))",
+                re.I,
+            )
+            if re.fullmatch(r"[0-9]{5,}", title)
+            else None
+        )
         metadata(doc, alias, redact, write)
+        if write:
+            page_labels(doc, title, alias, redact)
         attachments = []
         processed_payloads = set()
         for name in doc.embfile_names():
@@ -566,7 +672,7 @@ def process(data, alias, redact, reference, write):
                         if result != link[key]:
                             link[key] = result
                             page.update_link(link)
-                redact_page(page, alias, redact)
+                redact_page(page, alias, redact, numeric_title)
             else:
                 records = list(lines(page))
                 strong = title_fields(records)
