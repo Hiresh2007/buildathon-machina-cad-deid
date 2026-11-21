@@ -202,6 +202,10 @@ def source_identities(row, args):
         data, sha = fetch(row, args)
     except SourceError as exc:
         return "discover", str(exc), None, (), ()
+    prior = row["committed_discovery"] if "committed_discovery" in row.keys() else None
+    if prior and prior[0] == sha:
+        # The first path's words and typed forms are already in the shared transaction log.
+        return prior[1], prior[2], sha, (), ()
     # Every path is read and verified before reuse. Parsing the same large
     # document again in this worker would produce the same identity evidence.
     cache_key = (row["ext"], sha)
@@ -407,6 +411,28 @@ def drain(db, args, final=False):
                 Path(root).rmdir()
 
 
+def duplicate_discoveries(db):
+    """Track repeated manifest entries for the current discovery pass."""
+    if not db.execute("SELECT 1 FROM files WHERE status='discover' LIMIT 1").fetchone():
+        return {}
+    size_limit = 128 * 1024
+    return {
+        tuple(key): None for key in db.execute(
+            "SELECT ext,md5,bytes FROM files WHERE bytes>=? AND md5<>'' "
+            "GROUP BY ext,md5,bytes HAVING COUNT(*)>1", (size_limit,)
+        )
+    }
+
+
+def with_discovery_hints(rows, candidates):
+    for row in rows:
+        entry = dict(row)
+        known = candidates.get((row["ext"], row["md5"], row["bytes"]))
+        if known:
+            entry["committed_discovery"] = known
+        yield entry
+
+
 def phase_rows(db, phase):
     last = 0
     while True:
@@ -482,6 +508,9 @@ def work(db, args, key):
         discovery = phase == 'discover'
         operation = source_identities if discovery else transformed
         rows = itertools.islice(phase_rows(db, phase), remaining)
+        if discovery:
+            candidates = duplicate_discoveries(db)
+            rows = with_discovery_hints(rows, candidates)
         for row, result in process_rows(rows, args, operation, index):
             if remaining is not None:
                 remaining -= 1
@@ -492,6 +521,9 @@ def work(db, args, key):
                     db.executemany("INSERT OR IGNORE INTO identity VALUES (?)", ((word,) for word in words))
                     db.executemany("INSERT OR IGNORE INTO pdf_identity_form VALUES (?,?,?)", forms)
                     db.execute("UPDATE files SET status=?,reason=?,source_sha=? WHERE id=?", (status, reason, sha, row['id']))
+                identity_key = (row["ext"], row["md5"], row["bytes"])
+                if sha and identity_key in candidates:
+                    candidates[identity_key] = (sha, status, reason)
                 continue
             status, reason, output, counts = result
             if status != 'staged':
