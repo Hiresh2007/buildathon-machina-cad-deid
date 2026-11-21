@@ -70,6 +70,27 @@ def check():
         report = (first / "README.txt").read_text()
         assert "Output files: 3" in report and "unsupported format" in report and "invalid," in report
         assert "unhandled.bin" not in report and "broken.stp" not in report
+        webdir = Path("sources/www.example.test")
+        parts = [webdir / "www.supplier.test.pdf", webdir / "model.step"]
+        web_index = PathIndex(parts, ids)
+        target = Path(web_index.targets[str(parts[0])])
+        assert len(target.parts) == len(parts[0].parts)
+        assert target.name == ids.alias("www.supplier.test").removeprefix("https://") + ".pdf"
+        assert web_index.reference(str(parts[1]), parts[0].name) == target.name
+
+        neutral = b"#8=TEST_SCALAR('',(+1.0E-3,.5,-3E+2),.ON.,$,*);"
+        linked = b"#9=CONNECT('',(#8,#2));"
+        data = document("a.step", "b.step").replace(b"#1=APPLICATION", neutral + linked + b"\n#1=APPLICATION")
+        assert step.discover(data) == step.discover(document("a.step", "b.step"))
+        result = step.rewrite(data, ids.alias, ids, lambda name: name)
+        assert neutral in result and linked in result
+        for bad in (data.replace(b"(#8,#2)", b"(#88,#2)"), data.replace(linked, neutral)):
+            try:
+                step.discover(bad)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("accepted an undefined or duplicate STEP entity")
         unicode_header = document("a.step", "b.step").replace(b"Rae O''Neil", br"M\X2\00FC\X0\ller")
         assert "Müller" in step.discover(unicode_header)
     print("STEP identity, links, dimensions, deterministic rerun and omission checks passed.")

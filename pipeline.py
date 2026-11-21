@@ -131,7 +131,10 @@ class PathIndex:
     def part(self, value, directory):
         suffix = "" if directory else PurePosixPath(value).suffix
         stem = value[:-len(suffix)] if suffix else value
-        return (stem if structural(stem) else self.ids.alias(stem)) + suffix
+        component = stem if structural(stem) else self.ids.alias(stem)
+        # Website aliases have a URI form inside documents. Use the same host
+        # as a single filename component so a path retains its original depth.
+        return component.removeprefix("https://") + suffix
 
     def reference(self, current, value):
         clean = value.strip().replace("\\", "/").removeprefix("file://")

@@ -3,10 +3,19 @@
 import re
 
 
-# Quoted semicolons, doubled apostrophes and block comments are single tokens.
-TOKEN = re.compile(
+# Records containing only neutral empty labels, numbers, enums or references
+# have no strings to rewrite. Parse these common records with a bounded grammar.
+# All other records use the field and section parser below.
+NUMBER = r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[Ee][+-]?[0-9]+)?"
+SCALAR = r"(?:''|#[0-9]+|\$|\*|\.[A-Za-z][A-Za-z0-9_]*\.|" + NUMBER + r")"
+SCALAR_LIST = r"\(\s*" + SCALAR + r"(?:\s*,\s*" + SCALAR + r")*\s*\)"
+FIELD = r"(?:" + SCALAR_LIST + r"|" + SCALAR + r")"
+SIMPLE = (r"(?P<record>\#(?P<number>[0-9]+)\s*=\s*[A-Za-z][A-Za-z_0-9]*\s*\(\s*"
+          r"(?P<arguments>" + FIELD + r"(?:\s*,\s*" + FIELD + r"){0,9})\s*\)\s*;)")
+REFERENCE = re.compile(r"#([0-9]+)")
+TOKEN = re.compile(SIMPLE + r"|" +
     r"'(?:''|[^'])*'|/\*[\s\S]*?\*/|\"[0-9A-Fa-f]*\"|#[0-9]+|"
-    r"[A-Za-z_][A-Za-z_0-9-]*|\s+|."
+    r"[A-Za-z_][A-Za-z_0-9-]*|" + NUMBER + r"|\s+|."
 )
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z_0-9-]*\Z")
 UNESCAPE = re.compile(r"\\X([24])\\([0-9a-fA-F]+)\\X0\\|\\X\\([0-9a-fA-F]{2})|\\\\")
@@ -91,6 +100,16 @@ def _scan(data, handler, emit):
     body = False
     output = [] if emit else None
     for match in TOKEN.finditer(source):
+        if match['record'] is not None:
+            current = int(match['number'])
+            if state != 'data' or head is not None or stack or current in defined:
+                raise ValueError('unexpected or duplicate geometry record')
+            defined.add(current)
+            used.update(map(int, REFERENCE.findall(match['arguments'])))
+            if emit:
+                output.append(match[0])
+            word, previous = None, ';'
+            continue
         token = match[0]
         result = token
         if token.isspace() or token.startswith("/*"):

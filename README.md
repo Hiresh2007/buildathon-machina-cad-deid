@@ -67,6 +67,8 @@ python3.12 -m venv /private/work/geometry-env
   --key-file /private/work/keys/pseudonyms.bin
 ```
 
+On 2,050 additional organizer STEP/STP inputs, a faster scanner made the same 2,020 acceptances and 30 omissions as the earlier scanner. Every accepted output was byte-identical. Measured scanner CPU time fell from 485.88 to 151.95 seconds for those inputs.
+
 All twelve real STEP/STP pilot inputs and outputs opened and transferred in Open CASCADE. Root, solid, face, edge and vertex counts matched for each pair, as did bounds, surface area and volume within the check's numeric tolerance. One input emitted a native unresolved-reference warning that also occurred on its transformed counterpart.
 
 An independent DXF comparison uses `ezdxf==1.4.5`. Install it in the validation environment and run `check_dxf.py` with the same three arguments. Seven of the eight pilot inputs and outputs both opened. Their 583 modelspace entities matched by type, and the numeric and handle records matched exactly. The eighth source drawing lacked a required subclass and produced the same native error after processing. A synthetic title block, author field and contact string also passed a separate ezdxf round trip.

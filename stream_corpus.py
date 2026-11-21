@@ -3,17 +3,23 @@ import argparse
 import contextlib
 import fcntl
 import hashlib
+import http.client
 import itertools
 import json
+import multiprocessing
+from collections import Counter
 import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
 import sqlite3
+import ssl
 import subprocess
 import sys
 import tempfile
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+import threading
+import time
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from urllib.parse import unquote, urlsplit
 
 import pipeline
@@ -22,6 +28,7 @@ NATIVE_TYPES = {'.sldprt', '.sldasm', '.slddrw', '.ipt', '.iam', '.idw'}
 
 MIB = 1024 * 1024
 MIRROR = "https://machina-input.joinbuilders.org/"
+_connections = threading.local()
 UPLOADER_SHA = "c5cc9d94525d7fac3a380233f781bacb9df78d6ccb7283b3043ca368efd1ee77"
 SOURCE = Path(__file__).resolve().parent
 
@@ -80,6 +87,8 @@ def init_db(db, args, key):
     code.update(Path(handler.__file__) for handler in pipeline.HANDLERS.values())
     if args.learn_native:
         code.add(SOURCE / "inspect_native.py")
+    if args.verify_pdfs:
+        code.update((SOURCE / 'check_native_formats.py', SOURCE / 'requirements-verify.txt'))
     with db:
         bind(db, "manifest", digest(args.manifest))
         bind(db, "key", hashlib.sha256(key).hexdigest())
@@ -87,6 +96,7 @@ def init_db(db, args, key):
         bind(db, "per-file limit", str(args.max_mib))
         bind(db, "handlers", json.dumps(sorted(pipeline.HANDLERS)))
         bind(db, "learn native properties", str(args.learn_native))
+        bind(db, "independent PDF verification", str(args.verify_pdfs))
         bind(db, "source version", json.dumps({p.name: digest(p) for p in sorted(code)}, sort_keys=True))
     if db.execute("SELECT 1 FROM meta WHERE name='inventory'").fetchone():
         return
@@ -121,6 +131,37 @@ def verified(row, data):
     return data, sha
 
 
+def mirror_bytes(row, timeout):
+    # Each thread or worker process owns one keep-alive connection. The path
+    # comes from the already validated official manifest and stays on this host.
+    if not getattr(_connections, 'http', None):
+        if not getattr(_connections, 'tls', None):
+            _connections.tls = ssl.create_default_context()
+        _connections.http = http.client.HTTPSConnection(urlsplit(MIRROR).hostname,
+                                                       timeout=min(timeout, 10), context=_connections.tls)
+    connection = _connections.http
+    end = time.monotonic() + timeout
+    connection.request('GET', '/' + row['url'], headers={'Accept-Encoding': 'identity'})
+    response = connection.getresponse()
+    if response.status != 200:
+        raise SourceError(f'mirror HTTP {response.status}')
+    expected = row['bytes']
+    if response.length is not None and response.length != expected:
+        raise SourceError('mirror size differs from manifest')
+    data = bytearray()
+    while len(data) <= expected:
+        seconds = end - time.monotonic()
+        if seconds <= 0:
+            raise TimeoutError('source read timed out')
+        if connection.sock:
+            connection.sock.settimeout(seconds)
+        block = response.read(min(MIB, expected + 1 - len(data)))
+        if not block:
+            break
+        data.extend(block)
+    return bytes(data)
+
+
 def fetch(row, args):
     reason = "missing from cache"
     if args.cache:
@@ -135,22 +176,16 @@ def fetch(row, args):
             reason = str(exc) if isinstance(exc, SourceError) else "cache read failed"
     if args.offline:
         raise SourceError(reason)
-    for _ in range(args.retries + 1):
-        # Bounded stdout prevents a wrong-size or absent Content-Length from filling disk or RAM.
-        command = ["curl", "--fail", "--silent", "--show-error", "--proto", "=https",
-                   "--connect-timeout", "10", "--max-time", str(args.timeout),
-                   "--max-filesize", str(max(1, row["bytes"])), "--url", MIRROR + row["url"]]
-        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
-            data = proc.stdout.read(row["bytes"] + 1)
-            if len(data) > row["bytes"]:
-                proc.kill()
-            if proc.wait():
-                reason = "mirror transfer failed"
-                continue
+    for attempt in range(args.retries + 1):
         try:
-            return verified(row, data)
-        except SourceError as error:
-            reason = str(error)
+            return verified(row, mirror_bytes(row, args.timeout))
+        except (SourceError, OSError, http.client.HTTPException) as error:
+            reason = str(error) if isinstance(error, SourceError) else 'mirror transfer failed'
+            if getattr(_connections, 'http', None):
+                _connections.http.close()
+                _connections.http = None
+            if attempt < args.retries:
+                time.sleep(min(2, 0.2 * 2**attempt))
     raise SourceError(reason)
 
 
@@ -348,6 +383,61 @@ def drain(db, args, final=False):
                 Path(root).rmdir()
 
 
+def phase_rows(db, phase):
+    last = 0
+    while True:
+        batch = list(db.execute("SELECT * FROM files WHERE status=? AND id>? ORDER BY id LIMIT 256", (phase, last)))
+        if not batch:
+            return
+        last = batch[-1]['id']
+        yield from batch
+
+
+def start_writer(index):
+    global _writer_index
+    _writer_index = index
+
+
+def transformed(row, args):
+    try:
+        data, _ = fetch(row, args)
+    except SourceError as error:
+        return 'ready', str(error), None, None
+    index = _writer_index
+    index.link_counts = Counter()
+    handler = pipeline.HANDLERS[row['ext']]
+    try:
+        output = handler.rewrite(data, index.ids.alias, index.ids, lambda value: index.reference(row['path'], value))
+        for _ in handler.discover(output):
+            pass
+    except (ValueError, OSError):
+        return 'omitted', 'rewrite or structural validation failed', None, None
+    if row['ext'] == '.pdf' and args.verify_pdfs:
+        from check_native_formats import check_pdf
+        try:
+            check_pdf(data, output, index.ids, Counter())
+        except Exception:
+            return 'omitted', 'independent PDF rendering or metadata validation failed', None, None
+    return 'staged', '', output, index.link_counts
+
+
+def process_rows(rows, args, operation, index=None):
+    # The parent owns SQLite, the stage directory and the single writer lock. On
+    # POSIX the workers inherit the immutable path/identity indexes by copy-on-write.
+    context = multiprocessing.get_context('fork')
+    with ProcessPoolExecutor(max_workers=args.workers, mp_context=context, initializer=start_writer,
+                             initargs=(index,)) as pool:
+        pending = {pool.submit(operation, dict(row), args): row for row in itertools.islice(rows, args.workers)}
+        while pending:
+            complete, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for job in complete:
+                row = pending.pop(job)
+                yield row, job.result()
+                next_row = next(rows, None)
+                if next_row is not None:
+                    pending[pool.submit(operation, dict(next_row), args)] = next_row
+
+
 def work(db, args, key):
     stage_check(db, args)
     if marker(db, "completed"):
@@ -363,69 +453,47 @@ def work(db, args, key):
         ids = index = None
         if phase == "ready":
             ids, index = global_inventory(db, key)
-        last = 0
-        discovery = phase == "discover"
-        executor = ProcessPoolExecutor if discovery else ThreadPoolExecutor
-        operation = source_identities if discovery else fetch
-        with executor(max_workers=args.workers) as pool:
-            while True:
-                if remaining == 0:
-                    raise Paused("work limit reached")
-                # Only one bounded batch of downloaded objects may wait in RAM.
-                n = args.workers if remaining is None else min(args.workers, remaining)
-                batch = list(db.execute("SELECT * FROM files WHERE status=? AND id>? ORDER BY id LIMIT ?", (phase, last, n)))
-                if not batch:
-                    break
-                futures = [pool.submit(operation, dict(row), args) for row in batch]
-                for row, future in zip(batch, futures):
-                    last = row["id"]
-                    if remaining is not None:
-                        remaining -= 1
-                    if discovery:
-                        status, reason, sha, words = future.result()
-                        check_space(args.state, MIB, args)
-                        with db:
-                            db.executemany("INSERT OR IGNORE INTO identity VALUES (?)", ((word,) for word in words))
-                            db.execute("UPDATE files SET status=?,reason=?,source_sha=? WHERE id=?", (status, reason, sha, last))
-                        continue
-                    try:
-                        data, sha = future.result()
-                    except SourceError as error:
-                        row_update(db, row, phase, str(error))
-                        continue
-                    handler = pipeline.HANDLERS[row["ext"]]
-                    refs = index.link_counts.copy()
-                    try:
-                        output = handler.rewrite(data, ids.alias, ids if callable(ids) else ids.redact_text,
-                                                 lambda v: index.reference(row["path"], v))
-                        for _ in handler.discover(output):
-                            pass
-                    except (ValueError, OSError):
-                        row_update(db, row, "omitted", "rewrite or structural validation failed")
-                        continue
-                    if len(output) > chunk:
-                        raise Paused("one sanitized file exceeds the staging cap; increase --chunk-mib")
-                    if occupied + len(output) > chunk:
-                        drain(db, args)
-                        occupied = 0
-                    check_space(args.attempt, len(output), args)
-                    check_space(args.state, 0, args)
-                    target = index.targets[row["path"]]
-                    file = args.attempt / "corpus" / target
-                    file.parent.mkdir(parents=True, exist_ok=True)
-                    counts = index.link_counts - refs
-                    with db:
-                        db.execute("""UPDATE files SET status='staged',reason='',target=?,output_bytes=?,output_sha=?,
-                            resolved=?,unresolved=? WHERE id=?""",
-                            (target, len(output), hashlib.sha256(output).hexdigest(), counts["resolved in input inventory"],
-                             counts["unresolved external or ambiguous"], last))
-                    temporary = args.attempt / ".writing"
-                    with temporary.open("wb") as stream:
-                        stream.write(output)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    temporary.replace(file)
-                    occupied += len(output)
+        discovery = phase == 'discover'
+        operation = source_identities if discovery else transformed
+        rows = itertools.islice(phase_rows(db, phase), remaining)
+        for row, result in process_rows(rows, args, operation, index):
+            if remaining is not None:
+                remaining -= 1
+            if discovery:
+                status, reason, sha, words = result
+                check_space(args.state, MIB, args)
+                with db:
+                    db.executemany("INSERT OR IGNORE INTO identity VALUES (?)", ((word,) for word in words))
+                    db.execute("UPDATE files SET status=?,reason=?,source_sha=? WHERE id=?", (status, reason, sha, row['id']))
+                continue
+            status, reason, output, counts = result
+            if status != 'staged':
+                row_update(db, row, status, reason)
+                continue
+            if len(output) > chunk:
+                raise Paused("one sanitized file exceeds the staging cap; increase --chunk-mib")
+            if occupied + len(output) > chunk:
+                drain(db, args)
+                occupied = 0
+            check_space(args.attempt, len(output), args)
+            check_space(args.state, 0, args)
+            target = index.targets[row["path"]]
+            file = args.attempt / "corpus" / target
+            file.parent.mkdir(parents=True, exist_ok=True)
+            with db:
+                db.execute("""UPDATE files SET status='staged',reason='',target=?,output_bytes=?,output_sha=?,
+                    resolved=?,unresolved=? WHERE id=?""",
+                    (target, len(output), hashlib.sha256(output).hexdigest(), counts["resolved in input inventory"],
+                     counts["unresolved external or ambiguous"], row["id"]))
+            temporary = args.attempt / ".writing"
+            with temporary.open("wb") as stream:
+                stream.write(output)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(file)
+            occupied += len(output)
+        if remaining == 0:
+            raise Paused('work limit reached')
         if db.execute("SELECT 1 FROM files WHERE status=? LIMIT 1", (phase,)).fetchone():
             raise Paused(f"{phase} has unavailable or unverifiable inputs; correct the source and resume")
     docs(db, args, index)
@@ -441,6 +509,7 @@ def options(argv=None):
     parser.add_argument("--cache", type=Path, help="optional read-only local organizer input tree")
     parser.add_argument("--offline", action="store_true", help="use the local cache exclusively")
     parser.add_argument("--learn-native", action="store_true", help="learn typed identities from opaque native files and report their omission")
+    parser.add_argument("--verify-pdfs", action="store_true", help="apply independent PDF reader checks before staging any PDF")
     parser.add_argument("--max-mib", type=int, default=64, help="input ceiling per handler (fixed for this checkpoint)")
     parser.add_argument("--chunk-mib", type=int, default=256, help="maximum sanitized corpus bytes staged locally")
     parser.add_argument("--state-mib", type=int, default=1024, help="maximum SQLite database size")
@@ -486,6 +555,8 @@ def options(argv=None):
 
 def run(args):
     os.umask(0o077)
+    if args.verify_pdfs:
+        import check_native_formats  # Fail before scanning if the required native readers are missing.
     args.state.mkdir(parents=True, exist_ok=True, mode=0o700)
     args.attempt.mkdir(parents=True, exist_ok=True)
     args.key_file.parent.mkdir(parents=True, exist_ok=True)
