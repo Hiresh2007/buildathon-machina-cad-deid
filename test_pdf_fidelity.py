@@ -16,6 +16,7 @@ from check_native_formats import (
     measurements,
 )
 from pipeline import Identities
+from drawing_pdf import discover, UnsupportedPDF
 
 
 def drawing(changed_geometry=False, caption="test caption"):
@@ -30,6 +31,15 @@ def drawing(changed_geometry=False, caption="test caption"):
 
 
 class PDFFidelity(unittest.TestCase):
+    def test_metadata_dictionary_without_stream(self):
+        with pymupdf.open(stream=drawing()) as doc:
+            metadata = doc.get_new_xref()
+            doc.update_object(metadata, "<< /Type /Metadata /Subtype /XML >>")
+            doc.xref_set_key(doc.pdf_catalog(), "Metadata", f"{metadata} 0 R")
+            source = doc.tobytes()
+        with self.assertRaisesRegex(UnsupportedPDF, "no readable stream"):
+            discover(source)
+
     def test_geometry_plane(self):
         with closing(pdfium.PdfDocument(drawing())) as doc, closing(doc[0]) as page:
             source = graphics_render(page, 120, 120)

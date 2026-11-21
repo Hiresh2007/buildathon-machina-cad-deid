@@ -330,6 +330,8 @@ def metadata(doc, alias, redact, write):
                         doc.xref_set_key(xref, key, pdf.get_pdf_str(changed))
         if doc.xref_get_key(xref, "Type") == ("name", "/Metadata"):
             raw = doc.xref_stream(xref)
+            if raw is None:
+                raise UnsupportedPDF("PDF metadata dictionary has no readable stream")
             if len(raw) > 4 * 1024 * 1024:
                 raise UnsupportedPDF("oversized PDF metadata")
             result = xmp(raw, alias, redact)
