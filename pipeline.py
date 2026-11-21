@@ -17,10 +17,15 @@ import step
 import dxf
 import mesh
 import drawing_pdf
+import fcstd
+import sat
+import svg
+import workers as file_workers
 from naming import canonical, structural, DIMENSION
 
 
-HANDLERS = {".step": step, ".stp": step, ".dxf": dxf, ".stl": mesh, ".pdf": drawing_pdf}
+HANDLERS = {".step": step, ".stp": step, ".dxf": dxf, ".stl": mesh, ".pdf": drawing_pdf,
+            ".sat": sat, ".svg": svg, ".fcstd": fcstd}
 CONTACT = re.compile(
     r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+|(?:https?://|www\.)[^\s<>\x22']+"
     r"|(?<!\w)\+\d{1,3}[- (][0-9() .-]{6,18}\d(?!\w)", re.I,
@@ -167,12 +172,18 @@ def _write_code(staged):
     source = Path(__file__).resolve().parent
     dest = staged / "code"
     dest.mkdir()
-    for name in ("pipeline.py", "step.py", "dxf.py", "naming.py", "mesh.py", "drawing_pdf.py", "requirements.txt", "check_formats.py", "check_native_formats.py", "requirements-verify.txt", "check.py", "check_geometry.py", "check_dxf.py", "README.md", "LICENSE"):
+    names = (
+        "pipeline.py", "workers.py", "step.py", "dxf.py", "naming.py", "mesh.py", "drawing_pdf.py",
+        "sat.py", "svg.py", "fcstd.py", "requirements.txt", "requirements-verify.txt", "check.py",
+        "check_formats.py", "check_native_formats.py", "check_exchange.py", "check_geometry.py",
+        "check_dxf.py", "stream_corpus.py", "check_stream.py", "STREAMING.md", "README.md", "LICENSE",
+    )
+    for name in names:
         if (source / name).is_file():
             shutil.copyfile(source / name, dest / name)
 
 
-def run(input_dir, attempt, key_file, limit):
+def run(input_dir, attempt, key_file, limit, workers=1):
     root, attempt, key_file = (p.resolve() for p in (input_dir, attempt, key_file))
     code = Path(__file__).resolve().parent
     if not root.is_dir() or not re.fullmatch(r"attempt-[1-9]\d*", attempt.name):
@@ -194,28 +205,14 @@ def run(input_dir, attempt, key_file, limit):
             for part in path.parts[:-1]:
                 ids.learn(part)
     counts, omitted, accepted = Counter(), [], []
-    for path in sorted(paths):
-        original = root / path
-        suffix = path.suffix.lower()
-        if original.is_symlink():
-            reason = "symbolic link"
-        elif suffix not in HANDLERS:
-            reason = "unsupported format"
-        elif original.stat().st_size > limit:
-            reason = "over configured file-size limit"
+    for path, names, reason in file_workers.ordered_map(file_workers.discover, (root, limit), sorted(paths), workers):
+        if reason:
+            counts[reason] += 1
+            omitted.append((index.targets[str(path)], reason))
         else:
-            try:
-                data = original.read_bytes()
-                for name in HANDLERS[suffix].discover(data):
-                    ids.learn(name)
-                accepted.append(path)
-                continue
-            except drawing_pdf.UnsupportedPDF as error:
-                reason = str(error)
-            except (ValueError, OSError):
-                reason = "invalid, unreadable or unsupported document structure"
-        counts[reason] += 1
-        omitted.append((index.targets[str(path)], reason))
+            for name in names:
+                ids.learn(name)
+            accepted.append(path)
 
     attempt.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=attempt.parent, prefix=".machina-") as tmp:
@@ -223,27 +220,21 @@ def run(input_dir, attempt, key_file, limit):
         corpus = staged / "corpus"
         corpus.mkdir(parents=True)
         written = Counter()
-        for path in accepted:
-            handler = HANDLERS[path.suffix.lower()]
-            destination = corpus / index.targets[str(path)]
-            try:
-                transformed = handler.rewrite((root / path).read_bytes(), ids.alias, ids,
-                                              lambda value: index.reference(str(path), value))
-                tuple(handler.discover(transformed))
-            except (ValueError, OSError) as error:
-                reason = str(error) if isinstance(error, drawing_pdf.UnsupportedPDF) else "rewrite or validation failed"
+        links = Counter()
+        for path, references, reason in file_workers.ordered_map(file_workers.rewrite, (root, corpus, index), accepted, workers):
+            if reason:
                 counts[reason] += 1
                 omitted.append((index.targets[str(path)], reason))
-                continue
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(transformed)
-            written[path.suffix.lower()] += 1
+            else:
+                links.update(references)
+                written[path.suffix.lower()] += 1
+        index.link_counts = links
         _write_code(staged)
         report = [
-            "Machina CAD De-ID pilot", "",
+            "Machina CAD De-ID", "",
             "Reproduce on Python 3.12: install PDF support with python3 -m pip install -r code/requirements.txt.",
             "python3 code/pipeline.py --input /private/input --attempt /private/new/attempt-1 --key-file /private/key.bin",
-            f"This run used --max-mib {limit // (1024 * 1024)}. Supply the same 32-byte private key and input snapshot.",
+            f"This run used --max-mib {limit // (1024 * 1024)} --workers {workers}. Supply the same 32-byte private key and input snapshot.",
             "The key and private identity dictionary are excluded. See code/README.md for field coverage.",
             "", f"Input files observed: {len(paths)}. Output files: {sum(written.values())}.",
         ]
@@ -251,7 +242,7 @@ def run(input_dir, attempt, key_file, limit):
         report += [f"Omitted ({reason}): {count}." for reason, count in sorted(counts.items())]
         report += [f"Path fields {label}: {count}." for label, count in sorted(index.link_counts.items())]
         report += ["", "Scope and limitations",
-                   "Only the supplied input directory was examined. Supported files are text STEP/STP, ASCII DXF, STL meshes and PDFs.",
+                   "Only the supplied input directory was examined. Supported files are text STEP/STP, ASCII DXF, STL meshes, PDFs, ACIS SAT, SVG and FreeCAD FCStd documents.",
                    "Other formats, archives, previews, logos, ambiguous references and unrecognized free text require additional processing.",
                    "Embedded data and unsupported structures may carry identifiers. Local validation is structural; manual review is required.",
                    "References resolve against the input inventory. A target missing from the emitted corpus remains unavailable.",
@@ -269,11 +260,14 @@ def main():
     parser.add_argument("--key-file", required=True, type=Path,
                         help="private 32-byte key; generated on first use")
     parser.add_argument("--max-mib", type=int, default=64, help="per-file memory guard in MiB")
+    parser.add_argument("--workers", type=int, default=1, help="parallel files per pass")
     args = parser.parse_args()
+    if args.workers < 1:
+        parser.error("--workers must be positive")
     if args.max_mib < 1:
         parser.error("--max-mib must be positive")
     try:
-        run(args.input, args.attempt, args.key_file, args.max_mib * 1024 * 1024)
+        run(args.input, args.attempt, args.key_file, args.max_mib * 1024 * 1024, args.workers)
     except (ValueError, OSError) as error:
         parser.exit(1, f"Attempt failed: {error}\n")
 

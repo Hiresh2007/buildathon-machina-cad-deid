@@ -1,6 +1,6 @@
-# Machina CAD De-ID pilot
+# Machina CAD De-ID
 
-This two-pass processor pseudonymizes text STEP/STP models, ASCII DXF drawings, STL meshes and PDFs. It builds the Machina attempt directory with a corpus, runnable source, and a report of every omitted input. The CAD handlers use the Python standard library. PDF processing uses the version of PyMuPDF pinned in requirements.txt. The expanded pipeline and native-reader checks ran on Python 3.12. [Official track](https://www.joinbuilders.org/buildathon/tracks/machina-deid)
+This two-pass processor pseudonymizes text STEP/STP models, ASCII DXF drawings, STL meshes, PDFs, ACIS SAT models, SVG drawings and FreeCAD FCStd projects. It builds the Machina attempt directory with a corpus, runnable source, and a report of every omitted input. The CAD handlers use the Python standard library. PDF processing uses the version of PyMuPDF pinned in requirements.txt. The expanded pipeline and native-reader checks ran on Python 3.12. [Official track](https://www.joinbuilders.org/buildathon/tracks/machina-deid)
 
 ## Run locally
 
@@ -11,7 +11,7 @@ python3 -m pip install -r requirements.txt
 python3 pipeline.py \
   --input /private/work/input \
   --attempt /private/work/output/attempt-1 \
-  --key-file /private/work/keys/pseudonyms.bin
+  --key-file /private/work/keys/pseudonyms.bin --workers 4
 ```
 
 The output contains:
@@ -24,18 +24,25 @@ The program stages the entire attempt before publishing the directory. A new att
 
 ## What changes
 
-1. Scan supported inputs for identities in typed metadata fields. Learn file stems and identifying directory components. The shared lookup normalizes Unicode, case and whitespace, then derives pseudonyms with HMAC-SHA-256. Email aliases use the reserved `example.invalid` domain. Only the running process holds the lookup.
+1. Scan supported inputs for identities in typed metadata fields. Learn file stems and identifying directory components. The shared lookup normalizes Unicode, case and whitespace, then derives pseudonyms with HMAC-SHA-256. Email aliases use the reserved `example.invalid` domain. The directory processor holds the lookup in memory. The streaming runner keeps its checkpoint in a private directory.
 2. Rewrite STEP author, organization, address, authorization, product, assembly and document identity fields, along with identifying named properties. The scanner understands nested lists, typed values, doubled apostrophes, comments and common STEP Unicode escapes. It preserves quoted strings in their original encoding when unchanged. Comments are removed. It verifies header and data sections, balanced parentheses, unique entity definitions and local entity references before accepting a file.
 3. Rewrite DXF authorship properties, named title-block attributes, known identities and contacts in visible text, and paths in supported external-reference records. It locates fields by DXF group code and entity type. Drawing coordinates, handles, dimensions and block references retain their original records.
 4. Resolve file references relative to the drawing or by an unambiguous basename from the inventory. Recompute relative links using the translated source and target locations. Preserve common structural names such as `sources/github`, `sources/gitlab`, `drawings`, `models`, and format directories. Other path segments receive pseudonyms. The extension and original case of preserved segments remain intact.
-
 5. For binary STL, retain the complete facet table, normals, per-facet attribute bytes and recognized header color/material fields. For text STL, validate facet syntax and rewrite solid names while preserving every triangle record.
 6. For PDFs, pseudonymize document information, XMP, recognized title-block fields, visible text, comment authors, bookmark titles and supported file references. The writer physically removes matching glyphs from the content stream and inserts fitted replacements at the same location. It rewrites supported embedded STEP, DXF and STL files, including file-attachment annotations. It rewrites the full document and removes unreachable objects and stale page thumbnails. Non-identifying vector drawing data and raster images remain in the PDF.
+
+7. Translate SVG authorship metadata, titled annotations and external file links while preserving element IDs, drawing paths, coordinate attributes and internal anchors.
+8. Translate ACIS SAT length-prefixed strings in supported metadata and reference attributes and preserve the B-rep records. In FreeCAD FCStd archives, process document XML properties and embedded SVGs while preserving ZIP member names, application object IDs and shape streams.
+
+For a full manifest, follow [the streaming instructions](STREAMING.md). The private checkpoint lets you resume a disk-bounded run after interruption. The directory processor accepts `--workers` to distribute individual files between processes. Both passes use one shared set of learned identities.
 
 ## Checks
 
 ```sh
 python3 check.py
+python3 check_formats.py
+python3 check_exchange.py
+python3 check_stream.py
 python3 check_formats.py
 ```
 
@@ -64,6 +71,8 @@ Install the verifier dependencies to compare your private attempt. Its geometry 
 python3 -m pip install -r requirements-verify.txt
 python3 check_native_formats.py --input /private/work/input --attempt /private/work/output/attempt-1 --key-file /private/work/keys/pseudonyms.bin
 ```
+
+On private real inputs, all 549 accepted SVGs preserved the inspected geometry attributes and IDs. Of 1,050 SAT files, 1,048 passed structural checks. In an independent ACIS reader, 56 of the first 80 original files parsed, and all 56 transformed files had matching B-rep entity types and body counts. The other 24 original files were rejected by that reader. All 45 FreeCAD archives reopened and all 1,174 embedded B-rep shape streams matched byte-for-byte. Unrecognized metadata and raster previews in these formats may still contain identifying information.
 
 ## Coverage limits
 
