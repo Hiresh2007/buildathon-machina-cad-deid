@@ -12,6 +12,13 @@ from naming import canonical, structural
 # evidence that a dotted spelling is a domain. Engineering filenames do not.
 CONTACT_REPORT = "Contact domains share pseudonyms across email, web links and visible text."
 STEP_CONTACT_REPORT = "STEP header authors and organizations contribute contact domains."
+SHEET_REPORT = "Numbered PDF sheet titles preserve inventory-confirmed drawing and model pseudonyms."
+SHEET_TITLE = re.compile(
+    r"(?P<base>[^/\\\r\n]{1,200}?)"
+    r"(?P<suffix>(?:\s*[-–—_:|,;]\s*|\s+)(?:sheet|page|layout|blatt|feuille|hoja|foglio)"
+    r"\s*[-.#:]?\s*\d{1,3}(?:\s*(?:/|of|sur|von|de|di)\s*\d{1,3})?)\Z",
+    re.I,
+)
 HOSTNAME = r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}"
 HOST_END = r"(?![a-z0-9_-]|\.[a-z0-9])"
 HOST_EVIDENCE = re.compile(
@@ -136,7 +143,7 @@ def restore_directory_forms(root, attempt, paths, ids):
                 forms.update(item for item in observed if use_hosts or item[0] != "hostname")
         except (OSError, ValueError):
             continue
-    resolve(forms, ids)
+    resolve(forms, ids, paths if SHEET_REPORT in contents.splitlines() else ())
 
 
 class Observations(set):
@@ -193,6 +200,10 @@ class Observations(set):
                 and not structural(v)
             )
             self.forms.add(("asset", value, ""))
+        elif role == "title" and (sheet := SHEET_TITLE.fullmatch(value)):
+            base = sheet["base"].strip()
+            if base and not structural(base) and not SHEET_TITLE.fullmatch(base):
+                self.forms.add(("sheet", value, base))
 
     def finish(self):
         for kind, name, target in tuple(self.forms):
@@ -218,10 +229,11 @@ def typed(role, value, alias):
     return alias(value)
 
 
-def resolve(forms, ids):
+def resolve(forms, ids, paths=()):
     domains = defaultdict(set)
     confirmed = defaultdict(set)
     titles = set()
+    sheets = defaultdict(set)
     hosts = set()
     for kind, raw, target in forms:
         name, root = canonical(raw), canonical(target)
@@ -235,6 +247,8 @@ def resolve(forms, ids):
             ids.replacements[name] = ids.alias(root)
         elif kind == "asset":
             titles.add(raw)
+        elif kind == "sheet":
+            sheets[root].add(raw)
     ids.register_hosts(hosts)
     for login, roots in confirmed.items():
         if (
@@ -247,5 +261,14 @@ def resolve(forms, ids):
             ids.replacements[login] = ids.alias(next(iter(roots)))
     for title in sorted(titles):
         ids.replacements[canonical(title)] = asset_title(title, ids.alias)
+    if sheets:
+        # Confirm the isolated base against a real drawing or model filename before
+        # changing how any title or matching filename is rendered.
+        for path in paths:
+            base = canonical(path.stem)
+            if base in sheets and ASSET.search(path.name):
+                for title in sorted(sheets.pop(base)):
+                    suffix = SHEET_TITLE.fullmatch(title)["suffix"]
+                    ids.replacements[canonical(title)] = ids.alias(base) + suffix
     for spelling in sorted(ids.replacements):
         ids.learn(spelling)

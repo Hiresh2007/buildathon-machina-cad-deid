@@ -284,7 +284,7 @@ def run(input_dir, attempt, key_file, limit, workers=1):
             forms.update(getattr(names, "forms", ()))
             accepted.append(path)
 
-    pdf_identity.resolve(forms, ids)
+    pdf_identity.resolve(forms, ids, paths)
     index = PathIndex(paths, ids)
     omitted = [(index.targets[str(path)], reason) for path, reason in omitted]
     attempt.parent.mkdir(parents=True, exist_ok=True)
@@ -304,7 +304,7 @@ def run(input_dir, attempt, key_file, limit, workers=1):
         index.link_counts = links
         _write_code(staged)
         report = [
-            "Machina CAD De-ID", "", pdf_identity.CONTACT_REPORT, pdf_identity.STEP_CONTACT_REPORT,
+            "Machina CAD De-ID", "", pdf_identity.CONTACT_REPORT, pdf_identity.STEP_CONTACT_REPORT, pdf_identity.SHEET_REPORT,
             "Reproduce on Python 3.12: install PDF support with python3 -m pip install -r code/requirements.txt.",
             "python3 code/pipeline.py --input /private/input --attempt /private/new/attempt-1 --key-file /private/key.bin",
             f"This run used --max-mib {limit // (1024 * 1024)} --workers {workers}. Supply the same 32-byte private key and input snapshot.",

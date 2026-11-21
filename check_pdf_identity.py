@@ -58,6 +58,20 @@ def check_drawing_cells():
         assert doc[0].get_drawings()
 
 
+def check_sheet_titles():
+    ids = Identities(b"sheet inventory check")
+    identities = pdf_identity.Observations()
+    known = "Meridian Sample - Sheet 2 of 4"
+    for title in (known, "Unsourced Panel - Hoja2", "A4 - Sheet1", "Meridian Sample - velocity 2"):
+        identities.observe("title", title)
+    paths = [Path("models/Meridian Sample.step"), Path("manuals/Unsourced Panel.txt")]
+    pdf_identity.resolve(identities.forms, ids, paths)
+    index = PathIndex(paths, ids)
+    expected = Path(index.targets[str(paths[0])]).stem + " - Sheet 2 of 4"
+    assert ids.alias(known) == expected
+    assert set(ids.replacements) == {pdf_identity.canonical(known)}
+
+
 def check_link_rectangles():
     pdf = drawing_pdf.library()
     ids = Identities(b"test key for linked drawings")
@@ -120,6 +134,7 @@ def check_contact_domains():
 
 
 def main():
+    check_sheet_titles()
     check_link_rectangles()
     check_drawing_cells()
     check_contact_domains()
@@ -130,6 +145,8 @@ def main():
             b"Rae O''Neil", b"cad@model-only.test"
         ),
         "supplier.pdf": document("", "", ["model-only.test"]),
+        "Caldera Panel.pdf": document("", "Drawing index", ["Scale 1:2"]),
+        "sheet.pdf": document("", "Caldera Panel - Hoja2", ["Caldera Panel - Hoja2", "Diameter 25 mm"]),
         "contact.pdf": document("", "", ["help@orbitallab.test"]),
         "domain.pdf": document("", "", ["orbitallab.test"]),
         "a.pdf": document(
@@ -189,7 +206,7 @@ def main():
             for word in found:
                 ids.learn(word)
             forms.update(found.forms)
-        pdf_identity.resolve(forms, ids)
+        pdf_identity.resolve(forms, ids, list(map(Path, source)))
         names = PathIndex(list(map(Path, source)), ids)
         outputs = {}
         for original in source:
@@ -214,6 +231,9 @@ def main():
         assert ids.alias("ZX-42") + ".idw" in outputs["h.pdf"][1]
         assert outputs["i.pdf"][0]["title"] == "bracket.sldprt"
         assert "bracket.sldprt" in outputs["i.pdf"][1]
+        sheet = Path(names.targets["Caldera Panel.pdf"]).stem + " - Hoja2"
+        assert outputs["sheet.pdf"][0]["title"] == sheet
+        assert sheet in outputs["sheet.pdf"][1] and "Diameter 25 mm" in outputs["sheet.pdf"][1]
         restored = Identities(key)
         pdf_identity.restore_directory_forms(cache, direct, list(map(Path, source)), restored)
         assert restored.replacements == ids.replacements
@@ -226,9 +246,10 @@ def main():
         earlier = Identities(key)
         pdf_identity.restore_directory_forms(cache, direct, list(map(Path, source)), earlier)
         assert earlier.host_alias("model-only.test") is None and earlier.host_alias("orbitallab.test")
-        report.write_text(previous_report.replace(pdf_identity.CONTACT_REPORT, ""))
+        report.write_text(previous_report.replace(pdf_identity.CONTACT_REPORT, "").replace(pdf_identity.SHEET_REPORT, ""))
         legacy = Identities(key)
         pdf_identity.restore_directory_forms(cache, direct, list(map(Path, source)), legacy)
+        assert legacy.alias("Caldera Panel - Hoja2") != sheet
         assert not legacy.hosts and legacy.alias("orbitallab.test") != ids.alias("orbitallab.test")
         assert "Length 25 mm" in outputs["a.pdf"][1] and "Tolerance 0.02 mm" in outputs["g.pdf"][1]
         assert (direct / "code/pdf_identity.py").is_file()
