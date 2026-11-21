@@ -15,23 +15,16 @@ from pathlib import Path, PurePosixPath
 
 import step
 import dxf
+import mesh
+import drawing_pdf
+from naming import canonical, structural, DIMENSION
 
 
-HANDLERS = {".step": step, ".stp": step, ".dxf": dxf}
-GENERAL_NAMES = {
-    "cad", "step", "stp", "dxf", "drawings", "drawing", "models", "model", "components",
-    "component", "assemblies", "assembly", "parts", "part", "export", "exports", "files",
-    "archive", "archives", "input", "output", "data", "neutral", "documents", "library",
-    "mechanical", "hardware", "bracket", "bolt", "nut", "plate", "shaft", "washer",
-    "source", "sources", "github", "gitlab", "grabcad", "dataset", "datasets", "public",
-    "solidworks", "freecad", "autodesk", "inventor", "fusion360", "pdf", "images", "dwg",
-    "iges", "igs", "stl", "sldprt", "sldasm", "slddrw", "ipt", "iam", "idw",
-}
-CONTACT = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+|https?://[^\s<>\x22']+", re.I)
-
-
-def canonical(value):
-    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+HANDLERS = {".step": step, ".stp": step, ".dxf": dxf, ".stl": mesh, ".pdf": drawing_pdf}
+CONTACT = re.compile(
+    r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+|(?:https?://|www\.)[^\s<>\x22']+"
+    r"|(?<!\w)\+\d{1,3}[- (][0-9() .-]{6,18}\d(?!\w)", re.I,
+)
 
 
 class Identities:
@@ -44,25 +37,29 @@ class Identities:
         digest = hmac.new(self.key, name.encode(), hashlib.sha256).hexdigest()[:20]
         if re.fullmatch(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", name):
             return "contact-" + digest + "@example.invalid"
-        return "Anon-" + digest
+        if name.startswith(("http://", "https://", "www.")):
+            return "https://site-" + digest + ".example.invalid"
+        dimensions = [m[0].replace("µ", "u").replace("×", "x") for m in DIMENSION.finditer(name)]
+        return " ".join(["Anon-" + digest, *dimensions])
 
     def learn(self, value):
         word = canonical(value)
-        if len(word) < 3 or not any(c.isalpha() for c in word) or word in GENERAL_NAMES | step.NEUTRAL:
+        if len(word) < 3 or not any(c.isalpha() for c in word) or structural(word) or word in step.NEUTRAL:
             return
         node = self.words
         for char in word:
             node = node.setdefault(char, {})
         node[None] = self.alias(value)
 
-    def redact_text(self, text):
-        # Longest whole-token match, including compound names and strings with punctuation.
-        text = CONTACT.sub(lambda m: self.alias(m[0]), text)
-        result = []
+    def matches(self, text):
+        contacts = {match.start(): match for match in CONTACT.finditer(text)}
         i = 0
         while i < len(text):
             end, j, node, replacement = i, i, self.words, None
-            if i == 0 or not (text[i - 1].isalnum() and text[i].isalnum()):
+            if i in contacts:
+                match = contacts[i]
+                end, replacement = match.end(), self.alias(match[0])
+            elif i == 0 or not (text[i - 1].isalnum() and text[i].isalnum()):
                 while j < len(text):
                     char = unicodedata.normalize("NFKC", text[j]).casefold()
                     if char.isspace():
@@ -79,12 +76,20 @@ class Identities:
                     if None in node and (j == len(text) or not (text[j - 1].isalnum() and text[j].isalnum())):
                         end, replacement = j, node[None]
             if replacement is None:
-                result.append(text[i])
                 i += 1
             else:
-                result.append(replacement)
+                yield i, end, replacement
                 i = end
+
+    def redact_text(self, text):
+        result, cursor = [], 0
+        for start, end, replacement in self.matches(text):
+            result.extend((text[cursor:start], replacement))
+            cursor = end
+        result.append(text[cursor:])
         return "".join(result)
+
+    __call__ = redact_text
 
 
 class PathIndex:
@@ -92,6 +97,7 @@ class PathIndex:
         self.ids = ids
         self.targets = {".": "."}
         self.by_name = defaultdict(list)
+        self.by_relative = defaultdict(list)
         self.link_counts = Counter()
         taken = defaultdict(set)
         for path in sorted(paths):
@@ -112,17 +118,22 @@ class PathIndex:
                     self.targets[str(child)] = posixpath.join(self.targets[str(parent)], proposed).removeprefix("./")
                 parent = child
             self.by_name[canonical(path.name)].append(str(path))
+            self.by_relative[canonical(path.as_posix())].append(str(path))
 
     def part(self, value, directory):
         suffix = "" if directory else PurePosixPath(value).suffix
         stem = value[:-len(suffix)] if suffix else value
-        return (stem if canonical(stem) in GENERAL_NAMES else self.ids.alias(stem)) + suffix
+        return (stem if structural(stem) else self.ids.alias(stem)) + suffix
 
     def reference(self, current, value):
         clean = value.strip().replace("\\", "/").removeprefix("file://")
         if not clean:
             return value
         candidate = posixpath.normpath(posixpath.join(posixpath.dirname(current), clean))
+        if candidate not in self.targets:
+            matches = self.by_relative.get(canonical(candidate), [])
+            if len(matches) == 1:
+                candidate = matches[0]
         if candidate not in self.targets:
             names = self.by_name.get(canonical(posixpath.basename(clean)), [])
             candidate = names[0] if len(names) == 1 else None
@@ -156,7 +167,7 @@ def _write_code(staged):
     source = Path(__file__).resolve().parent
     dest = staged / "code"
     dest.mkdir()
-    for name in ("pipeline.py", "step.py", "dxf.py", "check.py", "check_geometry.py", "check_dxf.py", "README.md", "LICENSE"):
+    for name in ("pipeline.py", "step.py", "dxf.py", "naming.py", "mesh.py", "drawing_pdf.py", "requirements.txt", "check_formats.py", "check_native_formats.py", "requirements-verify.txt", "check.py", "check_geometry.py", "check_dxf.py", "README.md", "LICENSE"):
         if (source / name).is_file():
             shutil.copyfile(source / name, dest / name)
 
@@ -174,6 +185,8 @@ def run(input_dir, attempt, key_file, limit):
     ids = Identities(_load_key(key_file))
     # Include symlinks in the audit, but never follow a file link outside the input.
     paths = [p.relative_to(root) for p in root.rglob("*") if p.is_file() or p.is_symlink()]
+    if any(path.suffix.lower() == ".pdf" for path in paths):
+        drawing_pdf.library()
     index = PathIndex(paths, ids)
     for path in paths:
         if path.suffix.lower() in HANDLERS:
@@ -197,6 +210,8 @@ def run(input_dir, attempt, key_file, limit):
                     ids.learn(name)
                 accepted.append(path)
                 continue
+            except drawing_pdf.UnsupportedPDF as error:
+                reason = str(error)
             except (ValueError, OSError):
                 reason = "invalid, unreadable or unsupported document structure"
         counts[reason] += 1
@@ -212,11 +227,11 @@ def run(input_dir, attempt, key_file, limit):
             handler = HANDLERS[path.suffix.lower()]
             destination = corpus / index.targets[str(path)]
             try:
-                transformed = handler.rewrite((root / path).read_bytes(), ids.alias, ids.redact_text,
+                transformed = handler.rewrite((root / path).read_bytes(), ids.alias, ids,
                                               lambda value: index.reference(str(path), value))
                 tuple(handler.discover(transformed))
-            except (ValueError, OSError):
-                reason = "rewrite or validation failed"
+            except (ValueError, OSError) as error:
+                reason = str(error) if isinstance(error, drawing_pdf.UnsupportedPDF) else "rewrite or validation failed"
                 counts[reason] += 1
                 omitted.append((index.targets[str(path)], reason))
                 continue
@@ -226,7 +241,7 @@ def run(input_dir, attempt, key_file, limit):
         _write_code(staged)
         report = [
             "Machina CAD De-ID pilot", "",
-            "Reproduce using Python 3.10+ and its standard library (tested with Python 3.12 and 3.14).",
+            "Reproduce on Python 3.12: install PDF support with python3 -m pip install -r code/requirements.txt.",
             "python3 code/pipeline.py --input /private/input --attempt /private/new/attempt-1 --key-file /private/key.bin",
             f"This run used --max-mib {limit // (1024 * 1024)}. Supply the same 32-byte private key and input snapshot.",
             "The key and private identity dictionary are excluded. See code/README.md for field coverage.",
@@ -236,7 +251,7 @@ def run(input_dir, attempt, key_file, limit):
         report += [f"Omitted ({reason}): {count}." for reason, count in sorted(counts.items())]
         report += [f"Path fields {label}: {count}." for label, count in sorted(index.link_counts.items())]
         report += ["", "Scope and limitations",
-                   "Only the supplied input directory was examined. This pilot covers text STEP/STP and ASCII DXF.",
+                   "Only the supplied input directory was examined. Supported files are text STEP/STP, ASCII DXF, STL meshes and PDFs.",
                    "Other formats, archives, previews, logos, ambiguous references and unrecognized free text require additional processing.",
                    "Embedded data and unsupported structures may carry identifiers. Local validation is structural; manual review is required.",
                    "References resolve against the input inventory. A target missing from the emitted corpus remains unavailable.",

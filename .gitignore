@@ -8,3 +8,5 @@ attempt-*/
 *.stp
 *.step
 *.dxf
+*.pdf
+*.stl
