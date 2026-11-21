@@ -123,7 +123,13 @@ def main():
     check_link_rectangles()
     check_drawing_cells()
     check_contact_domains()
+    from check import document as step_document
+    import step
     source = {
+        "export.step": step_document("export.step", "another.step").replace(
+            b"Rae O''Neil", b"cad@model-only.test"
+        ),
+        "supplier.pdf": document("", "", ["model-only.test"]),
         "contact.pdf": document("", "", ["help@orbitallab.test"]),
         "domain.pdf": document("", "", ["orbitallab.test"]),
         "a.pdf": document(
@@ -177,8 +183,9 @@ def main():
             stream_corpus.run(stream_corpus.options(argv))
         ids = Identities(key)
         forms = set()
-        for data in source.values():
-            found = drawing_pdf.discover(data)
+        for name, data in source.items():
+            reader = step if name.endswith(".step") else drawing_pdf
+            found = reader.discover(data)
             for word in found:
                 ids.learn(word)
             forms.update(found.forms)
@@ -189,6 +196,9 @@ def main():
             target = names.targets[original]
             result = (direct / "corpus" / target).read_bytes()
             assert result == (archived / "corpus" / target).read_bytes()
+            if original.endswith(".step"):
+                assert ids.host_alias("model-only.test").encode() in result
+                continue
             with drawing_pdf.library().open(stream=result) as doc:
                 outputs[original] = (doc.metadata, doc[0].get_text())
                 assert doc[0].get_drawings()
@@ -209,8 +219,14 @@ def main():
         assert restored.replacements == ids.replacements
         assert ids.alias("orbitallab.test") in outputs["contact.pdf"][1]
         assert ids.alias("orbitallab.test") in outputs["domain.pdf"][1]
+        assert ids.host_alias("model-only.test") in outputs["supplier.pdf"][1]
         report = direct / "README.txt"
-        report.write_text(report.read_text().replace(pdf_identity.CONTACT_REPORT, ""))
+        previous_report = report.read_text().replace(pdf_identity.STEP_CONTACT_REPORT, "")
+        report.write_text(previous_report)
+        earlier = Identities(key)
+        pdf_identity.restore_directory_forms(cache, direct, list(map(Path, source)), earlier)
+        assert earlier.host_alias("model-only.test") is None and earlier.host_alias("orbitallab.test")
+        report.write_text(previous_report.replace(pdf_identity.CONTACT_REPORT, ""))
         legacy = Identities(key)
         pdf_identity.restore_directory_forms(cache, direct, list(map(Path, source)), legacy)
         assert not legacy.hosts and legacy.alias("orbitallab.test") != ids.alias("orbitallab.test")

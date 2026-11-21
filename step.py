@@ -2,6 +2,8 @@
 
 import re
 
+import pdf_identity
+
 
 # Records containing only neutral empty labels, numbers, enums or references
 # have no strings to rewrite. Parse these common records with a bounded grammar.
@@ -73,6 +75,8 @@ def _role(frames, value):
                 return "keep"
         if f.name == "FILE_DESCRIPTION" and f.field == 1:
             return "keep"
+        if f.name == "FILE_NAME" and f.field in (2, 3):
+            return "author or organization"
         if f.name == "FILE_NAME" and f.field == 0:
             return "path"
         if f.name in {"ADDRESS", "PERSONAL_ADDRESS", "ORGANIZATIONAL_ADDRESS"}:
@@ -180,10 +184,12 @@ def _scan(data, handler, emit):
 
 
 def discover(data):
-    identities = set()
+    identities = pdf_identity.Observations()
 
     def visit(role, value):
-        if role == "identity" and value.strip().casefold() not in NEUTRAL:
+        if role == "author or organization":
+            identities.observe_hosts(value)
+        if role in ("identity", "author or organization") and value.strip().casefold() not in NEUTRAL:
             identities.add(value)
         return value
 
@@ -195,6 +201,14 @@ def rewrite(data, alias, redact_text, rewrite_path):
     def replace(role, value):
         if role == "keep" or value.strip().casefold() in NEUTRAL:
             return value
+        if role == "author or organization":
+            identity = alias(value)
+            # A single STEP string can hold both a name and an explicit website.
+            # Keep the name's alias and the contact's independent domain relationship.
+            contacts = dict.fromkeys(m[0].rstrip(".,;!") for m in pdf_identity.HOST_EVIDENCE.finditer(value))
+            if contacts and value.strip() not in contacts:
+                return " ".join([identity, *(alias(contact) for contact in contacts)])
+            return identity
         if role == "identity":
             return alias(value)
         if role == "path":

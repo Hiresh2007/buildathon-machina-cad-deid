@@ -11,6 +11,7 @@ from naming import canonical, structural
 # Only an email address, an HTTP(S) address, or an explicit www host supplies
 # evidence that a dotted spelling is a domain. Engineering filenames do not.
 CONTACT_REPORT = "Contact domains share pseudonyms across email, web links and visible text."
+STEP_CONTACT_REPORT = "STEP header authors and organizations contribute contact domains."
 HOSTNAME = r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}"
 HOST_END = r"(?![a-z0-9_-]|\.[a-z0-9])"
 HOST_EVIDENCE = re.compile(
@@ -111,11 +112,13 @@ def restore_directory_forms(root, attempt, paths, ids):
     if not (attempt / "code" / "pdf_identity.py").is_file():
         return
     import drawing_pdf
+    import step
 
     limit = 64 * 1024 * 1024
     report = attempt / "README.txt"
     contents = report.read_text(encoding="utf-8") if report.is_file() else ""
     use_hosts = CONTACT_REPORT in contents.splitlines()
+    use_step = STEP_CONTACT_REPORT in contents.splitlines()
     if contents:
         cap = re.search(r"(?:--max-mib\s+|Input size ceiling:\s*)(\d+)", contents)
         if cap and int(cap[1]) > 0:
@@ -123,11 +126,13 @@ def restore_directory_forms(root, attempt, paths, ids):
     forms = set()
     for path in paths:
         source = root / path
-        if path.suffix.lower() != ".pdf" or source.is_symlink():
+        extension = path.suffix.lower()
+        if source.is_symlink() or (extension != ".pdf" and not (use_step and extension in (".step", ".stp"))):
             continue
         try:
             if source.stat().st_size <= limit:
-                observed = drawing_pdf.discover(source.read_bytes()).forms
+                reader = drawing_pdf if extension == ".pdf" else step
+                observed = reader.discover(source.read_bytes()).forms
                 forms.update(item for item in observed if use_hosts or item[0] != "hostname")
         except (OSError, ValueError):
             continue

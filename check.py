@@ -91,6 +91,21 @@ def check():
                 pass
             else:
                 raise AssertionError("accepted an undefined or duplicate STEP entity")
+        import pdf_identity
+        contact_model = document("example.stp", "part.step").replace(
+            b"Rae O''Neil", b"lead@fixture.test"
+        ).replace(b"Fictional Quartz Ltd.", b"Fixture owner - www.fixture.test").replace(
+            b"'writer'", b"'https://writer.tools.invalid/v1'"
+        )
+        learned = step.discover(contact_model)
+        assert learned.forms == {("hostname", "fixture.test", "fixture.test")}
+        contact_ids = Identities(bytes(32))
+        pdf_identity.resolve(learned.forms, contact_ids)
+        contact_output = step.rewrite(contact_model, contact_ids.alias, contact_ids, lambda path: path)
+        header = contact_output.split(b"ENDSEC;", 1)[0]
+        host = contact_ids.host_alias("fixture.test").encode()
+        assert header.count(host) == 2 and b"Fixture owner" not in header
+        assert b"fixture.test" not in header and step.discover(contact_output) is not None
         unicode_header = document("a.step", "b.step").replace(b"Rae O''Neil", br"M\X2\00FC\X0\ller")
         assert "Müller" in step.discover(unicode_header)
     print("STEP identity, links, dimensions, deterministic rerun and omission checks passed.")
