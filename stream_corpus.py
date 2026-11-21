@@ -430,9 +430,9 @@ def transformed(row, args):
 
 
 def process_rows(rows, args, operation, index=None):
-    # The parent owns SQLite, the stage directory and the single writer lock. On
-    # POSIX the workers inherit the immutable path/identity indexes by copy-on-write.
-    context = multiprocessing.get_context('fork')
+    # Native PDF and system frameworks on macOS require fresh interpreter workers.
+    # On Linux, workers share the immutable inventory by copy-on-write.
+    context = multiprocessing.get_context('spawn' if sys.platform == 'darwin' else 'fork')
     with ProcessPoolExecutor(max_workers=args.workers, mp_context=context, initializer=start_writer,
                              initargs=(index,)) as pool:
         pending = {pool.submit(operation, dict(row), args): row for row in itertools.islice(rows, args.workers)}
