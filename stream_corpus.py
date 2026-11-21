@@ -77,13 +77,15 @@ def init_db(db, args, key):
     db.executescript("""
       CREATE TABLE IF NOT EXISTS meta(name TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS identity(word TEXT PRIMARY KEY) WITHOUT ROWID;
+      CREATE TABLE IF NOT EXISTS pdf_identity_form(kind TEXT, spelling BLOB, target BLOB,
+          PRIMARY KEY(kind,spelling,target)) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, bytes INTEGER,
           md5 TEXT, url TEXT, ext TEXT, status TEXT, reason TEXT DEFAULT '', source_sha TEXT,
           target TEXT, output_sha TEXT, output_bytes INTEGER, resolved INTEGER DEFAULT 0,
           unresolved INTEGER DEFAULT 0);
       CREATE INDEX IF NOT EXISTS work ON files(status,id);
     """)
-    code = {Path(pipeline.__file__), Path(__file__), SOURCE / "naming.py", SOURCE / "requirements.txt"}
+    code = {Path(pipeline.__file__), Path(__file__), SOURCE / "naming.py", SOURCE / "pdf_identity.py", SOURCE / "requirements.txt"}
     code.update(Path(handler.__file__) for handler in pipeline.HANDLERS.values())
     if args.learn_native:
         code.add(SOURCE / "inspect_native.py")
@@ -198,7 +200,7 @@ def source_identities(row, args):
     try:
         data, sha = fetch(row, args)
     except SourceError as exc:
-        return "discover", str(exc), None, ()
+        return "discover", str(exc), None, (), ()
     if row["ext"] in NATIVE_TYPES:
         import inspect_native
         handler = inspect_native
@@ -207,10 +209,13 @@ def source_identities(row, args):
         handler = pipeline.HANDLERS[row["ext"]]
         status, reason = "ready", ""
     try:
-        words = {pipeline.canonical(word).encode("utf-8", "surrogatepass") for word in handler.discover(data)}
+        names = handler.discover(data)
+        words = {pipeline.canonical(word).encode("utf-8", "surrogatepass") for word in names}
+        forms = [(kind, name.encode("utf-8", "surrogatepass"), target.encode("utf-8", "surrogatepass"))
+                 for kind, name, target in getattr(names, "forms", ())]
     except (ValueError, OSError):
-        return "omitted", "invalid or unsupported document structure", sha, ()
-    return status, reason, sha, words
+        return "omitted", "invalid or unsupported document structure", sha, (), ()
+    return status, reason, sha, words, forms
 
 
 def row_update(db, row, status, reason=""):
@@ -270,6 +275,9 @@ def global_inventory(db, key):
     del names
     for (word,) in db.execute("SELECT word FROM identity"):
         ids.learn(word.decode("utf-8", "surrogatepass") if isinstance(word, bytes) else word)
+    forms = ((kind, name.decode("utf-8", "surrogatepass"), target.decode("utf-8", "surrogatepass"))
+             for kind, name, target in db.execute("SELECT kind,spelling,target FROM pdf_identity_form"))
+    pipeline.pdf_identity.resolve(forms, ids)
     return ids, pipeline.PathIndex(paths, ids)
 
 
@@ -460,10 +468,11 @@ def work(db, args, key):
             if remaining is not None:
                 remaining -= 1
             if discovery:
-                status, reason, sha, words = result
+                status, reason, sha, words, forms = result
                 check_space(args.state, MIB, args)
                 with db:
                     db.executemany("INSERT OR IGNORE INTO identity VALUES (?)", ((word,) for word in words))
+                    db.executemany("INSERT OR IGNORE INTO pdf_identity_form VALUES (?,?,?)", forms)
                     db.execute("UPDATE files SET status=?,reason=?,source_sha=? WHERE id=?", (status, reason, sha, row['id']))
                 continue
             status, reason, output, counts = result

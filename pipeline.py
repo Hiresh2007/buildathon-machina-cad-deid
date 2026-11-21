@@ -17,6 +17,7 @@ import step
 import dxf
 import mesh
 import drawing_pdf
+import pdf_identity
 import fcstd
 import manufacturing
 import sat
@@ -38,9 +39,12 @@ class Identities:
     def __init__(self, key):
         self.key = key
         self.words = {}
+        self.replacements = {}
 
     def alias(self, value):
         name = canonical(value)
+        if name in self.replacements:
+            return self.replacements[name]
         # Some native metadata readers return unpaired UTF-16 surrogates. Preserve
         # their code points for distinct, repeatable aliases on damaged inputs.
         digest = hmac.new(self.key, name.encode("utf-8", "surrogatepass"), hashlib.sha256).hexdigest()[:20]
@@ -180,9 +184,9 @@ def _write_code(staged):
     dest = staged / "code"
     dest.mkdir()
     names = (
-        "pipeline.py", "workers.py", "step.py", "dxf.py", "naming.py", "mesh.py", "drawing_pdf.py",
+        "pipeline.py", "workers.py", "step.py", "dxf.py", "naming.py", "mesh.py", "drawing_pdf.py", "pdf_identity.py",
         "sat.py", "svg.py", "fcstd.py", "manufacturing.py", "check_manufacturing.py", "vrml.py", "check_vrml.py", "requirements.txt", "requirements-verify.txt", "check.py",
-        "check_formats.py", "check_native_formats.py", "test_pdf_fidelity.py", "check_exchange.py", "check_geometry.py",
+        "check_formats.py", "check_pdf_identity.py", "check_native_formats.py", "test_pdf_fidelity.py", "check_exchange.py", "check_geometry.py",
         "check_dxf.py", "stream_corpus.py", "select_practice.py", "select_drawings.py", "screen_pdfs.py", "check_stream.py", "inspect_native.py", "NATIVE-AUDIT.md",
         "STREAMING.md", "README.md", "LICENSE",
     )
@@ -206,7 +210,7 @@ def run(input_dir, attempt, key_file, limit, workers=1):
     paths = [p.relative_to(root) for p in root.rglob("*") if p.is_file() or p.is_symlink()]
     if any(path.suffix.lower() == ".pdf" for path in paths):
         drawing_pdf.library()
-    index = PathIndex(paths, ids)
+    forms = set()
     for path in paths:
         if path.suffix.lower() in HANDLERS:
             ids.learn(path.stem)
@@ -216,12 +220,16 @@ def run(input_dir, attempt, key_file, limit, workers=1):
     for path, names, reason in file_workers.ordered_map(file_workers.discover, (root, limit), sorted(paths), workers):
         if reason:
             counts[reason] += 1
-            omitted.append((index.targets[str(path)], reason))
+            omitted.append((path, reason))
         else:
             for name in names:
                 ids.learn(name)
+            forms.update(getattr(names, "forms", ()))
             accepted.append(path)
 
+    pdf_identity.resolve(forms, ids)
+    index = PathIndex(paths, ids)
+    omitted = [(index.targets[str(path)], reason) for path, reason in omitted]
     attempt.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=attempt.parent, prefix=".machina-") as tmp:
         staged = Path(tmp) / attempt.name

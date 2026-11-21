@@ -41,7 +41,8 @@ def discover(state, path):
             return path, (), "unsupported format"
         if source.stat().st_size > limit:
             return path, (), "over configured file-size limit"
-        identities = tuple(dict.fromkeys(HANDLERS[extension].discover(source.read_bytes())))
+        found = HANDLERS[extension].discover(source.read_bytes())
+        identities = found if hasattr(found, "forms") else tuple(dict.fromkeys(found))
         return path, identities, None
     except (ValueError, OSError):
         return path, (), "invalid, unreadable or unsupported document structure"

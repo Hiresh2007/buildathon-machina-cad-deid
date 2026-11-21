@@ -9,6 +9,7 @@ from xml.parsers.expat import ExpatError
 
 import dxf
 import mesh
+import pdf_identity
 import step
 from naming import structural
 
@@ -32,6 +33,9 @@ IDENTITY = {
     "approvedby",
     "partnumber",
     "drawingnumber",
+    "createdby",
+    "modifiedby",
+    "lastsavedby",
 }
 PROTECTED = {
     "date",
@@ -165,7 +169,7 @@ def meaningful(value):
 
 
 def field(key, value, alias, redact):
-    kind = key.casefold()
+    kind = re.sub(r"[\s_-]+", "", key.casefold())
     if (
         kind in PROTECTED
         or not meaningful(value)
@@ -173,6 +177,8 @@ def field(key, value, alias, redact):
     ):
         return value
     if kind in IDENTITY:
+        if kind in pdf_identity.PERSON_FIELDS or kind == "title":
+            return pdf_identity.typed("title" if kind == "title" else "person", value.strip(), alias)
         return alias(value.strip())
     return redact(value)
 
@@ -270,6 +276,11 @@ def page_labels(doc, source_title, alias, redact):
 
 TYPED_STRINGS = (
     "Author",
+    "Designer",
+    "DrawnBy",
+    "CheckedBy",
+    "ApprovedBy",
+    "LastSavedBy",
     "Company",
     "Organization",
     "Organisation",
@@ -368,7 +379,7 @@ def lines(page):
 def title_fields(records):
     """Recognize an explicit author or client cell and a tightly aligned neighboring value."""
     pdf = library()
-    result = set()
+    result = {}
     boxes = [
         pdf.Rect(
             min(c["bbox"][0] for c, _ in chars),
@@ -381,7 +392,7 @@ def title_fields(records):
     for index, (text, _, direction) in enumerate(records):
         plain = text.strip().rstrip(":").casefold()
         if CORPORATE.fullmatch(text.strip()):
-            result.add(index)
+            result[index] = "organization"
         if plain not in PERSON_LABELS | COMPANY_LABELS or direction[0] < 0.98:
             continue
         label = boxes[index]
@@ -420,18 +431,19 @@ def title_fields(records):
                 choices.append((1.4 + dy / h, j))
         choices.sort()
         if choices and (len(choices) == 1 or choices[1][0] - choices[0][0] > 0.6):
-            result.add(choices[0][1])
+            result[choices[0][1]] = "person" if plain in PERSON_LABELS else "organization"
     return result
 
 
 def matches(text, redactor, alias, strong=False, numeric_title=None):
     if strong:
-        yield len(text) - len(text.lstrip()), len(text.rstrip()), alias(text.strip())
+        yield len(text) - len(text.lstrip()), len(text.rstrip()), pdf_identity.typed(strong, text.strip(), alias)
         return
     match = LABEL.match(text)
     if match and meaningful(match["value"]):
         start, end = match.span("value")
-        yield start, end, alias(match["value"])
+        role = "person" if match["label"].casefold() in PERSON_LABELS else ""
+        yield start, end, pdf_identity.typed(role, match["value"], alias)
     else:
         general = list(redactor.matches(text))
         if numeric_title:
@@ -452,7 +464,7 @@ def redact_page(page, alias, redactor, numeric_title):
     strong = title_fields(records)
     for i, (text, spans, direction) in enumerate(records):
         for start, stop, replacement in matches(
-            text, redactor, alias, i in strong, numeric_title
+            text, redactor, alias, strong.get(i), numeric_title
         ):
             selected = spans[start:stop]
             char, style = selected[0]
@@ -627,7 +639,7 @@ def process(data, alias, redact, reference, write):
                         value = info.get(key, "")
                         if not value:
                             continue
-                        result = alias(value) if key == "title" else redact(value)
+                        result = pdf_identity.typed("person", value, alias) if key == "title" else redact(value)
                         if write and result != value:
                             if annot.type[1] == "FreeText" and key == "content":
                                 raise UnsupportedPDF(
@@ -680,10 +692,11 @@ def process(data, alias, redact, reference, write):
                 strong = title_fields(records)
                 for i, (text, _, _) in enumerate(records):
                     if i in strong:
-                        alias(text.strip())
+                        pdf_identity.typed(strong[i], text.strip(), alias)
                     match = LABEL.match(text)
                     if match and meaningful(match["value"]):
-                        alias(match["value"])
+                        role = "person" if match["label"].casefold() in PERSON_LABELS else ""
+                        pdf_identity.typed(role, match["value"], alias)
         if write:
             for i, (_, title, _) in enumerate(doc.get_toc()):
                 changed = redact(title)
@@ -702,15 +715,16 @@ def process(data, alias, redact, reference, write):
 
 
 def discover(data):
-    values = set()
+    values = pdf_identity.Observations()
 
     def add(value):
         if meaningful(value):
             values.add(value)
         return value
 
+    add.observe = values.observe
     process(data, add, lambda value: value, lambda value: value, False)
-    return values
+    return values.finish()
 
 
 def rewrite(data, alias, redact_text, rewrite_path):

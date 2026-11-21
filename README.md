@@ -50,6 +50,7 @@ python3 select_practice.py --manifest /private/work/manifest.tsv --input /privat
 ```sh
 python3 check.py
 python3 check_formats.py
+python3 check_pdf_identity.py
 python3 check_exchange.py
 python3 check_manufacturing.py
 python3 check_vrml.py
@@ -111,3 +112,11 @@ python -m pip install -r requirements-verify.txt
 python check_vrml.py --vtk
 python check_vrml.py --sample-dir /private/work/wrl --manifest /private/work/manifest.tsv
 ```
+
+### Identity consistency across PDF drawings
+
+Typed authorship fields can include a Windows domain and login followed by a workstation in parentheses. The qualified account keeps its pseudonym when the workstation changes. A bare login is associated with that account only when both spellings occur in person fields in the same document and the corpus contains a single qualifying domain. Multiple domains retain separate pseudonyms. Shared system logins keep their unqualified representation. The private checkpoint stores these observations before the rewrite pass.
+
+CAD filenames in typed PDF titles use the same stem pseudonym as their corresponding models. Extensions, engineering folder names and drive designators are retained. Private path components are pseudonymized separately. A synthetic two-worker check covers these spellings in PDF metadata and page text and verifies byte-identical results after checkpoint resume.
+
+A targeted audit of 114 original drawings covered 71 qualified accounts. Whole-field hashes produced multiple pseudonyms for 12 of those accounts. The updated processor gave each account one pseudonym and kept all 71 distinct. All 15 CAD-title cases contained the expected model-stem pseudonym. Independent rendering and metadata checks passed for all 131 pages, covering 57,307 vector objects and 186 images.
