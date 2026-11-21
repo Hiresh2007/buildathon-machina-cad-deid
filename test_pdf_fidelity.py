@@ -14,6 +14,8 @@ from check_native_formats import (
     graphics_render,
     hide_text_paint,
     measurements,
+    recover_path_precision,
+    verified_pdf,
 )
 from pipeline import Identities
 from drawing_pdf import discover, rewrite, UnsupportedPDF
@@ -65,6 +67,45 @@ class PDFFidelity(unittest.TestCase):
             self.assertEqual(doc.xref_get_key(doc.pdf_catalog(), "AF"), ("array", "[]"))
         with self.assertRaisesRegex(UnsupportedPDF, "associated-file relationship"):
             discover(associated)
+
+    @staticmethod
+    def path_fixture(caption, coordinate, frame="", last=b"l"):
+        with pymupdf.open() as doc:
+            for _ in range(2):
+                page = doc.new_page(width=120, height=120)
+                page.insert_text((10, 25), caption)
+                page.insert_link({"kind": pymupdf.LINK_URI, "from": pymupdf.Rect(5, 10, 90, 30),
+                                  "uri": "https://fixture.invalid/drawing"})
+                xref = doc.get_new_xref()
+                doc.update_object(xref, "<<>>")
+                geometry = f"q {frame} 10 10 m 35.12345 40 l {coordinate} 65 ".encode()
+                doc.update_stream(xref, geometry + last + b" S Q")
+                streams = [*page.get_contents(), xref]
+                doc.xref_set_key(page.xref, "Contents", "[" + " ".join(f"{r} 0 R" for r in streams) + "]")
+            return doc.tobytes()
+
+    def test_verified_path_precision_keeps_sanitized_text_and_links(self):
+        source = self.path_fixture("PRIVATE OWNER", "55.12345")
+        cleaned = self.path_fixture("Anon fixture", "55.12")
+        ids = Identities(bytes(32))
+        with self.assertRaisesRegex(ValueError, "vector commands or styles differ"):
+            check_pdf(source, cleaned, ids, collections.Counter())
+        counts = collections.Counter()
+        result = verified_pdf(source, cleaned, ids, counts)
+        self.assertEqual(counts["PDFs recovered from path rounding"], 1)
+        self.assertEqual(counts["PDF pages"], 2)
+        with pymupdf.open(stream=result) as restored:
+            for page in restored:
+                self.assertEqual(page.get_text().strip(), "Anon fixture")
+                self.assertEqual(page.get_links()[0]["uri"], "https://fixture.invalid/drawing")
+        self.assertEqual(verified_pdf(source, result, ids, collections.Counter()), result)
+
+    def test_precision_requires_matching_paths_frames_and_small_changes(self):
+        source = self.path_fixture("PRIVATE OWNER", "55.12345")
+        for candidate in (self.path_fixture("Anon fixture", "53"),
+                          self.path_fixture("Anon fixture", "55.12", "1 0 0 1 1 0 cm"),
+                          self.path_fixture("Anon fixture", "55.12", last=b"m")):
+            self.assertIsNone(recover_path_precision(source, candidate))
 
     def test_geometry_plane(self):
         with closing(pdfium.PdfDocument(drawing())) as doc, closing(doc[0]) as page:

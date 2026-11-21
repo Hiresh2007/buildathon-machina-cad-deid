@@ -424,9 +424,9 @@ def transformed(row, args):
     except (ValueError, OSError):
         return 'omitted', 'rewrite or structural validation failed', None, None
     if row['ext'] == '.pdf' and args.verify_pdfs:
-        from check_native_formats import check_pdf
+        from check_native_formats import verified_pdf
         try:
-            check_pdf(data, output, index.ids, Counter())
+            output = verified_pdf(data, output, index.ids, Counter())
         except Exception:
             return 'omitted', 'independent PDF rendering or metadata validation failed', None, None
     return 'staged', '', output, index.link_counts

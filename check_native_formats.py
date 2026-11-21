@@ -216,6 +216,122 @@ def check_pdf(before, after, ids, counts):
     check_identities(before, after, ids, counts)
 
 
+# PDF path construction and paint operators. Their operands are numbers only.
+PATH_COORDINATES = {b"m": 2, b"l": 2, b"c": 6, b"v": 4, b"y": 4, b"re": 4}
+PATH_END = set(b"h W W* n s S f f* F b b* B B*".split())
+PDF_IDENTITY_MATRIX = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+
+
+def path_operations(content):
+    matrix, stack = PDF_IDENTITY_MATRIX, []
+    for i, (args, operator) in enumerate(content.operations):
+        if operator == b"q":
+            stack.append(matrix)
+        elif operator == b"Q":
+            if not stack:
+                raise ValueError("unbalanced PDF graphics state")
+            matrix = stack.pop()
+        elif operator == b"cm":
+            a, b, c, d, e, f = map(float, args)
+            xx, xy, yx, yy, dx, dy = matrix
+            matrix = (a * xx + b * yx, a * xy + b * yy,
+                      c * xx + d * yx, c * xy + d * yy,
+                      e * xx + f * yx + dx, e * xy + f * yy + dy)
+            if not all(map(math.isfinite, matrix)):
+                raise ValueError("non-finite PDF transformation")
+        elif operator in PATH_COORDINATES or operator in PATH_END:
+            if len(args) != PATH_COORDINATES.get(operator, 0):
+                raise ValueError("unexpected number of PDF coordinates")
+            yield i, operator, matrix, args
+    if stack:
+        raise ValueError("unbalanced PDF graphics state")
+
+
+def precise_path_stream(source, target):
+    # Retain the sanitized page's instructions and resources. Transfer only source
+    # coordinates when the complete path sequence and its coordinate frames match.
+    numbers = (pypdf.generic.NumberObject, pypdf.generic.FloatObject)
+    original = list(path_operations(source))
+    cleaned = list(path_operations(target))
+    if len(original) != len(cleaned):
+        return None
+    operations = list(target.operations)
+    changed = False
+    for (_, op, frame, before), (i, current, other_frame, after) in zip(original, cleaned):
+        if op != current or any(abs(a - b) > 1e-9 for a, b in zip(frame, other_frame)):
+            return None
+        if not all(isinstance(n, numbers) and math.isfinite(float(n)) for n in (*before, *after)):
+            return None
+        if any(abs(float(a) - float(b)) > 0.06 for a, b in zip(before, after)):
+            return None
+        if before != after:
+            operations[i] = (before, op)
+            changed = True
+    if changed:
+        target.operations = operations
+        return target.get_data()
+    return None
+
+
+def text_and_links(doc):
+    result = []
+    for page in doc:
+        links = [{k: v for k, v in link.items() if k not in ("xref", "id")}
+                 for link in page.get_links()]
+        result.append((page.get_text(), links))
+    return result
+
+
+def recover_path_precision(before, after):
+    source = pypdf.PdfReader(io.BytesIO(before), strict=False)
+    cleaned = pypdf.PdfReader(io.BytesIO(after), strict=False)
+    if len(source.pages) != len(cleaned.pages):
+        return None
+    changed = False
+    with pymupdf.open(stream=after) as result:
+        preserved = text_and_links(result)
+        for i, (original_page, cleaned_page) in enumerate(zip(source.pages, cleaned.pages)):
+            if "/Contents" not in original_page or "/Contents" not in cleaned_page:
+                continue
+            candidate = precise_path_stream(
+                pypdf.generic.ContentStream(original_page["/Contents"], source),
+                pypdf.generic.ContentStream(cleaned_page["/Contents"], cleaned),
+            )
+            if candidate is None:
+                continue
+            xref = result.get_new_xref()
+            result.update_object(xref, "<<>>")
+            result.update_stream(xref, candidate)
+            result[i].set_contents(xref)
+            changed = True
+        if not changed:
+            return None
+        candidate = result.tobytes(garbage=4, deflate=True, no_new_id=True)
+    with pymupdf.open(stream=candidate) as reread:
+        if text_and_links(reread) != preserved:
+            return None
+    return candidate
+
+
+def verified_pdf(before, after, ids, counts):
+    measured = collections.Counter()
+    try:
+        check_pdf(before, after, ids, measured)
+    except ValueError as error:
+        if str(error) not in {"independent graphics-only renders differ", "vector commands or styles differ",
+                               "vector object count differs"}:
+            raise
+        repaired = recover_path_precision(before, after)
+        if repaired is None:
+            raise
+        measured.clear()
+        check_pdf(before, repaired, ids, measured)
+        measured["PDFs recovered from path rounding"] += 1
+        after = repaired
+    counts.update(measured)
+    return after
+
+
 def contains_original(value, originals, probes, depth=0):
     if depth > 80:
         raise ValueError("unsupported PDF object nesting")

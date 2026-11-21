@@ -4,12 +4,13 @@ import argparse
 from collections import Counter
 import hashlib
 import logging
+import os
 from pathlib import Path
 import re
 import shutil
 import tempfile
 
-from check_native_formats import check_pdf
+from check_native_formats import verified_pdf
 from pipeline import Identities, PathIndex
 import pdf_identity
 
@@ -49,7 +50,18 @@ def screen(source, attempt, hold, key):
             continue
         try:
             file_counts = Counter()
-            check_pdf((source / path).read_bytes(), output.read_bytes(), ids, file_counts)
+            original_output = output.read_bytes()
+            candidate = verified_pdf((source / path).read_bytes(), original_output, ids, file_counts)
+            if candidate != original_output:
+                with tempfile.NamedTemporaryFile(dir=output.parent, delete=False) as changed:
+                    temporary = Path(changed.name)
+                    try:
+                        changed.write(candidate)
+                        changed.flush()
+                        os.fsync(changed.fileno())
+                        temporary.replace(output)
+                    finally:
+                        temporary.unlink(missing_ok=True)
             counts.update(file_counts)
             counts['PDFs passed'] += 1
         except Exception:
