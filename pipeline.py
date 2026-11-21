@@ -1,0 +1,267 @@
+"""Build a private Machina CAD De-ID attempt from an input directory."""
+
+import argparse
+import hashlib
+import hmac
+import os
+import posixpath
+import re
+import secrets
+import shutil
+import tempfile
+import unicodedata
+from collections import Counter, defaultdict
+from pathlib import Path, PurePosixPath
+
+import step
+import dxf
+
+
+HANDLERS = {".step": step, ".stp": step, ".dxf": dxf}
+GENERAL_NAMES = {
+    "cad", "step", "stp", "dxf", "drawings", "drawing", "models", "model", "components",
+    "component", "assemblies", "assembly", "parts", "part", "export", "exports", "files",
+    "archive", "archives", "input", "output", "data", "neutral", "documents", "library",
+    "mechanical", "hardware", "bracket", "bolt", "nut", "plate", "shaft", "washer",
+    "source", "sources", "github", "gitlab", "grabcad", "dataset", "datasets", "public",
+    "solidworks", "freecad", "autodesk", "inventor", "fusion360", "pdf", "images", "dwg",
+    "iges", "igs", "stl", "sldprt", "sldasm", "slddrw", "ipt", "iam", "idw",
+}
+CONTACT = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+|https?://[^\s<>\x22']+", re.I)
+
+
+def canonical(value):
+    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+
+
+class Identities:
+    def __init__(self, key):
+        self.key = key
+        self.words = {}
+
+    def alias(self, value):
+        name = canonical(value)
+        digest = hmac.new(self.key, name.encode(), hashlib.sha256).hexdigest()[:20]
+        if re.fullmatch(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", name):
+            return "contact-" + digest + "@example.invalid"
+        return "Anon-" + digest
+
+    def learn(self, value):
+        word = canonical(value)
+        if len(word) < 3 or not any(c.isalpha() for c in word) or word in GENERAL_NAMES | step.NEUTRAL:
+            return
+        node = self.words
+        for char in word:
+            node = node.setdefault(char, {})
+        node[None] = self.alias(value)
+
+    def redact_text(self, text):
+        # Longest whole-token match, including compound names and strings with punctuation.
+        text = CONTACT.sub(lambda m: self.alias(m[0]), text)
+        result = []
+        i = 0
+        while i < len(text):
+            end, j, node, replacement = i, i, self.words, None
+            if i == 0 or not (text[i - 1].isalnum() and text[i].isalnum()):
+                while j < len(text):
+                    char = unicodedata.normalize("NFKC", text[j]).casefold()
+                    if char.isspace():
+                        char = " "
+                        while j + 1 < len(text) and text[j + 1].isspace():
+                            j += 1
+                    for part in char:
+                        node = node.get(part)
+                        if node is None:
+                            break
+                    if node is None:
+                        break
+                    j += 1
+                    if None in node and (j == len(text) or not (text[j - 1].isalnum() and text[j].isalnum())):
+                        end, replacement = j, node[None]
+            if replacement is None:
+                result.append(text[i])
+                i += 1
+            else:
+                result.append(replacement)
+                i = end
+        return "".join(result)
+
+
+class PathIndex:
+    def __init__(self, paths, ids):
+        self.ids = ids
+        self.targets = {".": "."}
+        self.by_name = defaultdict(list)
+        self.link_counts = Counter()
+        taken = defaultdict(set)
+        for path in sorted(paths):
+            parent = PurePosixPath(".")
+            for n, part in enumerate(path.parts):
+                child = parent / part
+                if str(child) not in self.targets:
+                    directory = n < len(path.parts) - 1
+                    proposed = self.part(part, directory)
+                    used = taken[self.targets[str(parent)]]
+                    if proposed.casefold() in used:
+                        suffix = "" if directory else PurePosixPath(proposed).suffix
+                        unique = hmac.new(ids.key, str(child).encode(), hashlib.sha256).hexdigest()[:16]
+                        proposed = "Entry-" + unique + suffix
+                    if proposed.casefold() in used:
+                        raise ValueError("output path collision")
+                    used.add(proposed.casefold())
+                    self.targets[str(child)] = posixpath.join(self.targets[str(parent)], proposed).removeprefix("./")
+                parent = child
+            self.by_name[canonical(path.name)].append(str(path))
+
+    def part(self, value, directory):
+        suffix = "" if directory else PurePosixPath(value).suffix
+        stem = value[:-len(suffix)] if suffix else value
+        return (stem if canonical(stem) in GENERAL_NAMES else self.ids.alias(stem)) + suffix
+
+    def reference(self, current, value):
+        clean = value.strip().replace("\\", "/").removeprefix("file://")
+        if not clean:
+            return value
+        candidate = posixpath.normpath(posixpath.join(posixpath.dirname(current), clean))
+        if candidate not in self.targets:
+            names = self.by_name.get(canonical(posixpath.basename(clean)), [])
+            candidate = names[0] if len(names) == 1 else None
+        if candidate in self.targets:
+            self.link_counts["resolved in input inventory"] += 1
+            return posixpath.relpath(self.targets[candidate], posixpath.dirname(self.targets[current]) or ".")
+        self.link_counts["unresolved external or ambiguous"] += 1
+        # An unavailable external file has no verified destination. Mask its basename.
+        base = posixpath.basename(clean) or clean
+        return self.part(base, False)
+
+
+def _within(path, folder):
+    return path == folder or folder in path.parents
+
+
+def _load_key(path):
+    if not path.exists():
+        try:
+            with open(path, "xb", opener=lambda name, flags: os.open(name, flags, 0o600)) as out:
+                out.write(secrets.token_bytes(32))
+        except FileExistsError:
+            pass
+    key = path.read_bytes()
+    if len(key) != 32:
+        raise ValueError("the key file must contain exactly 32 bytes")
+    return key
+
+
+def _write_code(staged):
+    source = Path(__file__).resolve().parent
+    dest = staged / "code"
+    dest.mkdir()
+    for name in ("pipeline.py", "step.py", "dxf.py", "check.py", "check_geometry.py", "check_dxf.py", "README.md", "LICENSE"):
+        if (source / name).is_file():
+            shutil.copyfile(source / name, dest / name)
+
+
+def run(input_dir, attempt, key_file, limit):
+    root, attempt, key_file = (p.resolve() for p in (input_dir, attempt, key_file))
+    code = Path(__file__).resolve().parent
+    if not root.is_dir() or not re.fullmatch(r"attempt-[1-9]\d*", attempt.name):
+        raise ValueError("provide an input directory and a new attempt-N output path")
+    if attempt.exists() or _within(attempt, root) or _within(root, attempt):
+        raise ValueError("input and new attempt must be separate directories")
+    if _within(key_file, root) or _within(key_file, attempt) or any(_within(p, code) for p in (key_file, root, attempt)):
+        raise ValueError("keep the key, inputs and output separate from each other and the code")
+    key_file.parent.mkdir(parents=True, exist_ok=True)
+    ids = Identities(_load_key(key_file))
+    # Include symlinks in the audit, but never follow a file link outside the input.
+    paths = [p.relative_to(root) for p in root.rglob("*") if p.is_file() or p.is_symlink()]
+    index = PathIndex(paths, ids)
+    for path in paths:
+        if path.suffix.lower() in HANDLERS:
+            ids.learn(path.stem)
+            for part in path.parts[:-1]:
+                ids.learn(part)
+    counts, omitted, accepted = Counter(), [], []
+    for path in sorted(paths):
+        original = root / path
+        suffix = path.suffix.lower()
+        if original.is_symlink():
+            reason = "symbolic link"
+        elif suffix not in HANDLERS:
+            reason = "unsupported format"
+        elif original.stat().st_size > limit:
+            reason = "over configured file-size limit"
+        else:
+            try:
+                data = original.read_bytes()
+                for name in HANDLERS[suffix].discover(data):
+                    ids.learn(name)
+                accepted.append(path)
+                continue
+            except (ValueError, OSError):
+                reason = "invalid, unreadable or unsupported document structure"
+        counts[reason] += 1
+        omitted.append((index.targets[str(path)], reason))
+
+    attempt.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=attempt.parent, prefix=".machina-") as tmp:
+        staged = Path(tmp) / attempt.name
+        corpus = staged / "corpus"
+        corpus.mkdir(parents=True)
+        written = Counter()
+        for path in accepted:
+            handler = HANDLERS[path.suffix.lower()]
+            destination = corpus / index.targets[str(path)]
+            try:
+                transformed = handler.rewrite((root / path).read_bytes(), ids.alias, ids.redact_text,
+                                              lambda value: index.reference(str(path), value))
+                tuple(handler.discover(transformed))
+            except (ValueError, OSError):
+                reason = "rewrite or validation failed"
+                counts[reason] += 1
+                omitted.append((index.targets[str(path)], reason))
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(transformed)
+            written[path.suffix.lower()] += 1
+        _write_code(staged)
+        report = [
+            "Machina CAD De-ID pilot", "",
+            "Reproduce using Python 3.10+ and its standard library (tested with Python 3.12 and 3.14).",
+            "python3 code/pipeline.py --input /private/input --attempt /private/new/attempt-1 --key-file /private/key.bin",
+            f"This run used --max-mib {limit // (1024 * 1024)}. Supply the same 32-byte private key and input snapshot.",
+            "The key and private identity dictionary are excluded. See code/README.md for field coverage.",
+            "", f"Input files observed: {len(paths)}. Output files: {sum(written.values())}.",
+        ]
+        report += [f"Written {ext}: {count}." for ext, count in sorted(written.items())]
+        report += [f"Omitted ({reason}): {count}." for reason, count in sorted(counts.items())]
+        report += [f"Path fields {label}: {count}." for label, count in sorted(index.link_counts.items())]
+        report += ["", "Scope and limitations",
+                   "Only the supplied input directory was examined. This pilot covers text STEP/STP and ASCII DXF.",
+                   "Other formats, archives, previews, logos, ambiguous references and unrecognized free text require additional processing.",
+                   "Embedded data and unsupported structures may carry identifiers. Local validation is structural; manual review is required.",
+                   "References resolve against the input inventory. A target missing from the emitted corpus remains unavailable.",
+                   "", "Omitted input entries (pseudonymous paths)"]
+        report += [f"{path}  [{reason}]" for path, reason in omitted]
+        (staged / "README.txt").write_text("\n".join(report) + "\n", encoding="utf-8")
+        staged.rename(attempt)
+    print(f"Processed {sum(written.values())}/{len(paths)} files. Omitted {len(omitted)}. See attempt README.txt.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input", required=True, type=Path)
+    parser.add_argument("--attempt", required=True, type=Path)
+    parser.add_argument("--key-file", required=True, type=Path,
+                        help="private 32-byte key; generated on first use")
+    parser.add_argument("--max-mib", type=int, default=64, help="per-file memory guard in MiB")
+    args = parser.parse_args()
+    if args.max_mib < 1:
+        parser.error("--max-mib must be positive")
+    try:
+        run(args.input, args.attempt, args.key_file, args.max_mib * 1024 * 1024)
+    except (ValueError, OSError) as error:
+        parser.exit(1, f"Attempt failed: {error}\n")
+
+
+if __name__ == "__main__":
+    main()
