@@ -6,7 +6,6 @@ import hashlib
 import http.client
 import itertools
 import json
-import multiprocessing
 from collections import Counter
 import os
 from pathlib import Path, PurePosixPath
@@ -23,6 +22,7 @@ from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from urllib.parse import unquote, urlsplit
 
 import pipeline
+from workers import worker_context
 
 NATIVE_TYPES = {'.sldprt', '.sldasm', '.slddrw', '.ipt', '.iam', '.idw'}
 
@@ -433,9 +433,7 @@ def transformed(row, args):
 
 
 def process_rows(rows, args, operation, index=None):
-    # Native PDF and system frameworks on macOS require fresh interpreter workers.
-    # On Linux, workers share the immutable inventory by copy-on-write.
-    context = multiprocessing.get_context('spawn' if sys.platform == 'darwin' else 'fork')
+    context = worker_context()
     with ProcessPoolExecutor(max_workers=args.workers, mp_context=context, initializer=start_writer,
                              initargs=(index,)) as pool:
         pending = {pool.submit(operation, dict(row), args): row for row in itertools.islice(rows, args.workers)}

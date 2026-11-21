@@ -1,6 +1,7 @@
 """Run independent files in input order and share read-only CAD indexes per worker."""
 
 import multiprocessing
+import sys
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 
@@ -14,15 +15,20 @@ def _process(item):
     return _operation(_state, item)
 
 
+def worker_context():
+    # On macOS a native framework initialized in another parent thread cannot
+    # be safely used after fork. Share indexes by copy-on-write where supported.
+    methods = multiprocessing.get_all_start_methods()
+    method = "fork" if sys.platform != "darwin" and "fork" in methods else "spawn"
+    return multiprocessing.get_context(method)
+
+
 def ordered_map(operation, state, items, workers):
     if workers == 1:
         for item in items:
             yield operation(state, item)
         return
-    # The CLI is single-threaded between pools. Fork shares the completed identity
-    # trie by copy-on-write on POSIX. Spawn serializes the same indexes elsewhere.
-    methods = multiprocessing.get_all_start_methods()
-    context = multiprocessing.get_context("fork" if "fork" in methods else "spawn")
+    context = worker_context()
     with ProcessPoolExecutor(workers, mp_context=context, initializer=_initialize,
                              initargs=(operation, state)) as pool:
         yield from pool.map(_process, items, chunksize=2)
