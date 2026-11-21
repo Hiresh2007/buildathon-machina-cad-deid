@@ -13,10 +13,12 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from urllib.parse import unquote, urlsplit
 
 import pipeline
+
+NATIVE_TYPES = {'.sldprt', '.sldasm', '.slddrw', '.ipt', '.iam', '.idw'}
 
 MIB = 1024 * 1024
 MIRROR = "https://machina-input.joinbuilders.org/"
@@ -74,14 +76,17 @@ def init_db(db, args, key):
           unresolved INTEGER DEFAULT 0);
       CREATE INDEX IF NOT EXISTS work ON files(status,id);
     """)
-    code = {Path(pipeline.__file__), Path(__file__)}
+    code = {Path(pipeline.__file__), Path(__file__), SOURCE / "naming.py", SOURCE / "requirements.txt"}
     code.update(Path(handler.__file__) for handler in pipeline.HANDLERS.values())
+    if args.learn_native:
+        code.add(SOURCE / "inspect_native.py")
     with db:
         bind(db, "manifest", digest(args.manifest))
         bind(db, "key", hashlib.sha256(key).hexdigest())
         bind(db, "attempt", str(args.attempt))
         bind(db, "per-file limit", str(args.max_mib))
         bind(db, "handlers", json.dumps(sorted(pipeline.HANDLERS)))
+        bind(db, "learn native properties", str(args.learn_native))
         bind(db, "source version", json.dumps({p.name: digest(p) for p in sorted(code)}, sort_keys=True))
     if db.execute("SELECT 1 FROM meta WHERE name='inventory'").fetchone():
         return
@@ -95,7 +100,8 @@ def init_db(db, args, key):
         check_space(args.state, MIB, args)
         entries = []
         for i, (path, size, md5, url, ext) in batch:
-            reason = ("unsupported format" if ext not in pipeline.HANDLERS else
+            supported = ext in pipeline.HANDLERS or (args.learn_native and ext in NATIVE_TYPES)
+            reason = ("unsupported format" if not supported else
                       "over configured input size limit" if size > args.max_mib * MIB else "")
             entries.append((i, path, size, md5, url, ext, "omitted" if reason else "discover", reason))
         with db:
@@ -151,6 +157,25 @@ def fetch(row, args):
 def check_space(folder, extra, args):
     if shutil.disk_usage(folder).free < extra + args.reserve_mib * MIB:
         raise Paused("insufficient free space above disk reserve")
+
+
+def source_identities(row, args):
+    try:
+        data, sha = fetch(row, args)
+    except SourceError as exc:
+        return "discover", str(exc), None, ()
+    if row["ext"] in NATIVE_TYPES:
+        import inspect_native
+        handler = inspect_native
+        status, reason = "omitted", "native metadata scanned; application streams require a native rewrite"
+    else:
+        handler = pipeline.HANDLERS[row["ext"]]
+        status, reason = "ready", ""
+    try:
+        words = {pipeline.canonical(word).encode("utf-8", "surrogatepass") for word in handler.discover(data)}
+    except (ValueError, OSError):
+        return "omitted", "invalid or unsupported document structure", sha, ()
+    return status, reason, sha, words
 
 
 def row_update(db, row, status, reason=""):
@@ -209,7 +234,7 @@ def global_inventory(db, key):
         ids.learn(word)
     del names
     for (word,) in db.execute("SELECT word FROM identity"):
-        ids.learn(word)
+        ids.learn(word.decode("utf-8", "surrogatepass") if isinstance(word, bytes) else word)
     return ids, pipeline.PathIndex(paths, ids)
 
 
@@ -339,7 +364,10 @@ def work(db, args, key):
         if phase == "ready":
             ids, index = global_inventory(db, key)
         last = 0
-        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        discovery = phase == "discover"
+        executor = ProcessPoolExecutor if discovery else ThreadPoolExecutor
+        operation = source_identities if discovery else fetch
+        with executor(max_workers=args.workers) as pool:
             while True:
                 if remaining == 0:
                     raise Paused("work limit reached")
@@ -348,27 +376,24 @@ def work(db, args, key):
                 batch = list(db.execute("SELECT * FROM files WHERE status=? AND id>? ORDER BY id LIMIT ?", (phase, last, n)))
                 if not batch:
                     break
-                futures = [pool.submit(fetch, row, args) for row in batch]
+                futures = [pool.submit(operation, dict(row), args) for row in batch]
                 for row, future in zip(batch, futures):
                     last = row["id"]
                     if remaining is not None:
                         remaining -= 1
+                    if discovery:
+                        status, reason, sha, words = future.result()
+                        check_space(args.state, MIB, args)
+                        with db:
+                            db.executemany("INSERT OR IGNORE INTO identity VALUES (?)", ((word,) for word in words))
+                            db.execute("UPDATE files SET status=?,reason=?,source_sha=? WHERE id=?", (status, reason, sha, last))
+                        continue
                     try:
                         data, sha = future.result()
                     except SourceError as error:
                         row_update(db, row, phase, str(error))
                         continue
                     handler = pipeline.HANDLERS[row["ext"]]
-                    if phase == "discover":
-                        check_space(args.state, MIB, args)
-                        try:
-                            with db:
-                                db.executemany("INSERT OR IGNORE INTO identity VALUES (?)",
-                                    ((pipeline.canonical(word),) for word in handler.discover(data)))
-                                db.execute("UPDATE files SET status='ready',reason='',source_sha=? WHERE id=?", (sha, last))
-                        except (ValueError, OSError):
-                            row_update(db, row, "omitted", "invalid or unsupported document structure")
-                        continue
                     refs = index.link_counts.copy()
                     try:
                         output = handler.rewrite(data, ids.alias, ids if callable(ids) else ids.redact_text,
@@ -411,10 +436,11 @@ def options(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--state", required=True, type=Path, help="private SQLite checkpoint and default HMAC key")
-    parser.add_argument("--attempt", required=True, type=Path, help="new attempt-1, attempt-2 or attempt-3 staging folder")
+    parser.add_argument("--attempt", required=True, type=Path, help="new numbered attempt-N staging folder")
     parser.add_argument("--key-file", type=Path)
     parser.add_argument("--cache", type=Path, help="optional read-only local organizer input tree")
     parser.add_argument("--offline", action="store_true", help="use the local cache exclusively")
+    parser.add_argument("--learn-native", action="store_true", help="learn typed identities from opaque native files and report their omission")
     parser.add_argument("--max-mib", type=int, default=64, help="input ceiling per handler (fixed for this checkpoint)")
     parser.add_argument("--chunk-mib", type=int, default=256, help="maximum sanitized corpus bytes staged locally")
     parser.add_argument("--state-mib", type=int, default=1024, help="maximum SQLite database size")
@@ -437,7 +463,7 @@ def options(argv=None):
     if (min(args.workers, args.max_mib, args.chunk_mib, args.state_mib, args.timeout) < 1
             or min(args.retries, args.reserve_mib) < 0 or (args.work_limit is not None and args.work_limit < 1)):
         parser.error("invalid worker, size, timeout, retry or work limit")
-    if not re.fullmatch("attempt-[123]", args.attempt.name) or (args.offline and not args.cache):
+    if not re.fullmatch(r"attempt-[1-9]\d*", args.attempt.name) or (args.offline and not args.cache):
         parser.error("use an official attempt-N directory and provide a cache when offline")
     roots = [p for p in (args.state, args.attempt, args.cache, args.archive, SOURCE) if p]
     if any(x.is_relative_to(y) or y.is_relative_to(x) for x, y in itertools.combinations(roots, 2)):

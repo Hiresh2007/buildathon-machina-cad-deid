@@ -39,7 +39,9 @@ class Identities:
 
     def alias(self, value):
         name = canonical(value)
-        digest = hmac.new(self.key, name.encode(), hashlib.sha256).hexdigest()[:20]
+        # Some native metadata readers return unpaired UTF-16 surrogates. Preserve
+        # their code points for distinct, repeatable aliases on damaged inputs.
+        digest = hmac.new(self.key, name.encode("utf-8", "surrogatepass"), hashlib.sha256).hexdigest()[:20]
         if re.fullmatch(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", name):
             return "contact-" + digest + "@example.invalid"
         if name.startswith(("http://", "https://", "www.")):
@@ -176,7 +178,8 @@ def _write_code(staged):
         "pipeline.py", "workers.py", "step.py", "dxf.py", "naming.py", "mesh.py", "drawing_pdf.py",
         "sat.py", "svg.py", "fcstd.py", "requirements.txt", "requirements-verify.txt", "check.py",
         "check_formats.py", "check_native_formats.py", "check_exchange.py", "check_geometry.py",
-        "check_dxf.py", "stream_corpus.py", "check_stream.py", "STREAMING.md", "README.md", "LICENSE",
+        "check_dxf.py", "stream_corpus.py", "check_stream.py", "inspect_native.py", "NATIVE-AUDIT.md",
+        "STREAMING.md", "README.md", "LICENSE",
     )
     for name in names:
         if (source / name).is_file():
