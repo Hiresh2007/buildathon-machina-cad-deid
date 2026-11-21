@@ -7,7 +7,7 @@ import http.client
 import itertools
 import json
 import multiprocessing
-from collections import Counter, OrderedDict
+from collections import Counter, OrderedDict, deque
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -19,7 +19,7 @@ import sys
 import tempfile
 import threading
 import time
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from urllib.parse import unquote, urlsplit
 
 import pipeline
@@ -198,8 +198,10 @@ def check_space(folder, extra, args):
 
 
 def source_identities(row, args):
+    if "prefetch_error" in row.keys():
+        return "discover", row["prefetch_error"], None, (), ()
     try:
-        data, sha = fetch(row, args)
+        data, sha = verified(row, row["prefetched_input"]) if "prefetched_input" in row.keys() else fetch(row, args)
     except SourceError as exc:
         return "discover", str(exc), None, (), ()
     prior = row["committed_discovery"] if "committed_discovery" in row.keys() else None
@@ -424,6 +426,30 @@ def duplicate_discoveries(db):
     }
 
 
+def prefetch_small_sources(rows, args):
+    """Overlap small mirror transfers with parsing, keeping native readers in separate processes."""
+    def take(item):
+        row, transfer = item
+        if transfer is not None:
+            try:
+                row["prefetched_input"] = transfer.result()[0]
+            except SourceError as error:
+                row["prefetch_error"] = str(error)
+        return row
+
+    pending = deque()
+    with ThreadPoolExecutor(max_workers=args.prefetch_small) as pool:
+        for row in rows:
+            transfer = None
+            if row["bytes"] <= 128 * 1024 and (not args.cache or not (args.cache / row["path"]).is_file()):
+                transfer = pool.submit(fetch, row, args)
+            pending.append((row, transfer))
+            if len(pending) >= 2 * args.prefetch_small:
+                yield take(pending.popleft())
+        while pending:
+            yield take(pending.popleft())
+
+
 def with_discovery_hints(rows, candidates):
     for row in rows:
         entry = dict(row)
@@ -476,7 +502,10 @@ def transformed(row, args):
 def process_rows(rows, args, operation, index=None):
     # Native PDF and system frameworks on macOS require fresh interpreter workers.
     # On Linux, workers share the immutable inventory by copy-on-write.
-    context = multiprocessing.get_context('spawn' if sys.platform == 'darwin' else 'fork')
+    # Discovery prefetch starts network threads in the parent; forking them would
+    # inherit live TLS connections and locks. Transform workers retain the usual context.
+    threaded = operation is source_identities and getattr(args, 'prefetch_small', 0) and not args.offline
+    context = multiprocessing.get_context('spawn' if sys.platform == 'darwin' or threaded else 'fork')
     with ProcessPoolExecutor(max_workers=args.workers, mp_context=context, initializer=start_writer,
                              initargs=(index,)) as pool:
         pending = {pool.submit(operation, dict(row), args): row for row in itertools.islice(rows, args.workers)}
@@ -511,6 +540,8 @@ def work(db, args, key):
         if discovery:
             candidates = duplicate_discoveries(db)
             rows = with_discovery_hints(rows, candidates)
+            if getattr(args, 'prefetch_small', 0) and not args.offline:
+                rows = prefetch_small_sources(rows, args)
         for row, result in process_rows(rows, args, operation, index):
             if remaining is not None:
                 remaining -= 1
@@ -561,6 +592,8 @@ def work(db, args, key):
 
 def options(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prefetch-small", type=int, default=0, metavar="N",
+                        help="overlap N verified mirror reads for small discovery inputs")
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--state", required=True, type=Path, help="private SQLite checkpoint and default HMAC key")
     parser.add_argument("--attempt", required=True, type=Path, help="new numbered attempt-N staging folder")
@@ -589,7 +622,7 @@ def options(argv=None):
             setattr(args, name, path.expanduser().resolve())
     args.key_file = args.key_file or args.state / "alias.key"
     if (min(args.workers, args.max_mib, args.chunk_mib, args.state_mib, args.timeout) < 1
-            or min(args.retries, args.reserve_mib) < 0 or (args.work_limit is not None and args.work_limit < 1)):
+            or min(args.retries, args.reserve_mib, args.prefetch_small) < 0 or (args.work_limit is not None and args.work_limit < 1)):
         parser.error("invalid worker, size, timeout, retry or work limit")
     if not re.fullmatch(r"attempt-[1-9]\d*", args.attempt.name) or (args.offline and not args.cache):
         parser.error("use an official attempt-N directory and provide a cache when offline")
