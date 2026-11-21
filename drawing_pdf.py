@@ -152,7 +152,7 @@ def document(data):
             if doc.is_form_pdf:
                 raise UnsupportedPDF("interactive PDF form")
             yield doc
-    except (RuntimeError, OverflowError, ExpatError) as error:
+    except (RuntimeError, OverflowError, ExpatError, pdf.mupdf.FzErrorBase) as error:
         raise UnsupportedPDF("unsupported PDF object") from error
 
 
