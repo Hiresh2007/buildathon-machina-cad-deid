@@ -19,7 +19,7 @@ from check_native_formats import (
     verified_pdf,
 )
 from pipeline import Identities
-from drawing_pdf import discover, rewrite, UnsupportedPDF
+from drawing_pdf import discover, object_numbers, rewrite, UnsupportedPDF
 
 
 def drawing(changed_geometry=False, caption="test caption"):
@@ -34,6 +34,40 @@ def drawing(changed_geometry=False, caption="test caption"):
 
 
 class PDFFidelity(unittest.TestCase):
+    def test_free_pdf_slots_and_compressed_live_entries(self):
+        # Object 3 is free. The two later objects are live, including the author.
+        objects = {
+            1: b"<< /Type /Catalog /Pages 2 0 R >>",
+            2: b"<< /Type /Pages /Count 1 /Kids [4 0 R] >>",
+            4: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 120 120] >>",
+            5: b"<< /Author (Example Engineer) >>",
+        }
+        data = bytearray(b"%PDF-1.6\n")
+        offsets = {}
+        for number, value in objects.items():
+            offsets[number] = len(data)
+            data.extend(f"{number} 0 obj\n".encode() + value + b"\nendobj\n")
+        xref = len(data)
+        data.extend(b"xref\n0 6\n0000000003 65535 f \n")
+        for number in range(1, 6):
+            if number in offsets:
+                data.extend(f"{offsets[number]:010d} 00000 n \n".encode())
+            else:
+                data.extend(b"0000000000 00001 f \n")
+        data.extend(b"trailer\n<< /Size 6 /Root 1 0 R /Info 5 0 R >>\n")
+        data.extend(f"startxref\n{xref}\n%%EOF\n".encode())
+        with pymupdf.open(stream=data) as doc:
+            self.assertEqual(list(object_numbers(doc)), [1, 2, 4, 5])
+            compressed = doc.tobytes(garbage=4, use_objstms=1)
+        for source in (bytes(data), compressed):
+            self.assertIn("Example Engineer", discover(source))
+            identities = Identities(bytes(32))
+            identities.learn("Example Engineer")
+            output = rewrite(source, identities.alias, identities, lambda value: value)
+            check_pdf(source, output, identities, collections.Counter())
+            with pymupdf.open(stream=output) as result:
+                self.assertEqual(result.metadata["author"], identities.alias("Example Engineer"))
+
     def test_extracted_unit_spacing_requires_unchanged_physical_glyphs(self):
         def page_with(label, x):
             with pymupdf.open() as document:

@@ -187,6 +187,19 @@ def document(data):
         raise UnsupportedPDF("unsupported PDF object") from error
 
 
+def object_numbers(doc):
+    """Visit ordinary and compressed objects across the current PDF cross-reference sections."""
+    native = library().mupdf
+    current = native.PdfDocument(doc.this)
+    for number in range(1, doc.xref_length()):
+        entry = native.ll_pdf_get_xref_entry_no_change(current.m_internal, number)
+        if entry is None or entry.type in {"f", "\x00"}:
+            continue
+        if entry.type not in {"n", "o"}:
+            raise UnsupportedPDF("unsupported PDF cross-reference entry")
+        yield number
+
+
 def meaningful(value):
     return bool(
         value.strip()
@@ -365,7 +378,7 @@ def metadata(doc, alias, redact, write, jpeg_metadata=False):
             )
             if write and result != value:
                 doc.xref_set_key(entry, key, pdf.get_pdf_str(result))
-    for xref in range(1, doc.xref_length()):
+    for xref in object_numbers(doc):
         if jpeg_metadata:
             embedded_image_authors(doc, xref, alias, write)
         # PieceInfo stores application-private editing data. Illustrator and
@@ -784,7 +797,7 @@ def process(data, alias, redact, reference, write):
                     doc.set_toc_item(i, title=changed)
             result = doc.tobytes(garbage=4, deflate=True, no_new_id=True)
             with document(result) as saved:
-                for entry in range(1, saved.xref_length()):
+                for entry in object_numbers(saved):
                     if saved.xref_get_key(entry, "Type") == ("name", "/EmbeddedFile"):
                         if (
                             hashlib.sha256(saved.xref_stream(entry)).digest()
