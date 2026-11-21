@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import step
+import pdf_identity
 from pipeline import Identities, PathIndex, run
 
 
@@ -78,6 +79,22 @@ def check():
         assert target.name == ids.alias("www.supplier.test").removeprefix("https://") + ".pdf"
         assert web_index.reference(str(parts[1]), parts[0].name) == target.name
 
+        # The same word can name a collection of drawings, an account or a project.
+        spec = Path("sources/github/Documentation/PDFs/Technical-Drawings/Case-81.step")
+        sibling = spec.parent.parent / "Documentation" / "Model-81.step"
+        directories = PathIndex([spec, sibling], ids)
+        target = Path(directories.targets[str(spec)])
+        assert target.parts[2:4] == (ids.alias("Documentation"), ids.alias("PDFs"))
+        assert target.parent.name == "Technical-Drawings"
+        assert Path(directories.targets[str(sibling)]).parent.name == "Documentation"
+        assert directories.reference(str(sibling), "../Technical-Drawings/Case-81.step") == (
+            "../Technical-Drawings/" + target.name
+        )
+        assert pdf_identity.asset_title(str(spec), ids.alias) == str(target)
+        native = pdf_identity.asset_title("C:/Users/Documentation/PDFs/Case-81.step", ids.alias)
+        assert native == "C:/Users/" + ids.alias("Documentation") + "/PDFs/" + target.name
+        assert pdf_identity.asset_title("PDFs.step", ids.alias) == ids.alias("PDFs") + ".step"
+
         neutral = b"#8=TEST_SCALAR('',(+1.0E-3,.5,-3E+2),.ON.,$,*);"
         linked = b"#9=CONNECT('',(#8,#2));"
         data = document("a.step", "b.step").replace(b"#1=APPLICATION", neutral + linked + b"\n#1=APPLICATION")
@@ -91,7 +108,6 @@ def check():
                 pass
             else:
                 raise AssertionError("accepted an undefined or duplicate STEP entity")
-        import pdf_identity
         contact_model = document("example.stp", "part.step").replace(
             b"Rae O''Neil", b"lead@fixture.test"
         ).replace(b"Fictional Quartz Ltd.", b"Fixture owner - www.fixture.test").replace(

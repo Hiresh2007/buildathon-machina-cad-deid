@@ -5,7 +5,7 @@ from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 import re
 
-from naming import canonical, structural
+from naming import canonical, engineering_directory, structural
 
 
 # Only an email address, an HTTP(S) address, or an explicit www host supplies
@@ -94,7 +94,9 @@ def asset_title(value, alias):
             return part
         return alias(part)
 
-    return "/".join([*(component(part) for part in folders), component(stem) + extension])
+    parts = [part if engineering_directory(part, folders[:i]) else component(part)
+             for i, part in enumerate(folders)]
+    return "/".join([*parts, component(stem) + extension])
 
 
 def visible_asset(text):

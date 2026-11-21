@@ -25,7 +25,7 @@ import sat
 import svg
 import vrml
 import workers as file_workers
-from naming import canonical, structural, DIMENSION
+from naming import DIMENSION, canonical, engineering_directory, path_identities, structural
 
 
 HANDLERS = {".step": step, ".stp": step, ".dxf": dxf, ".stl": mesh, ".pdf": drawing_pdf,
@@ -176,7 +176,7 @@ class PathIndex:
                 child = parent / part
                 if str(child) not in self.targets:
                     directory = n < len(path.parts) - 1
-                    proposed = self.part(part, directory)
+                    proposed = self.part(part, directory, path.parts[:n])
                     used = taken[self.targets[str(parent)]]
                     if proposed.casefold() in used:
                         suffix = "" if directory else PurePosixPath(proposed).suffix
@@ -190,10 +190,11 @@ class PathIndex:
             self.by_name[canonical(path.name)].append(str(path))
             self.by_relative[canonical(path.as_posix())].append(str(path))
 
-    def part(self, value, directory):
+    def part(self, value, directory, parents=()):
         suffix = "" if directory else PurePosixPath(value).suffix
         stem = value[:-len(suffix)] if suffix else value
-        component = stem if structural(stem) else self.ids.alias(stem)
+        preserve = structural(stem) or (directory and engineering_directory(stem, parents))
+        component = stem if preserve else self.ids.alias(stem)
         # Website aliases have a URI form inside documents. Use the same host
         # as a single filename component so a path retains its original depth.
         return component.removeprefix("https://").removeprefix("http://").replace("?ref=", "-ref-") + suffix
@@ -270,8 +271,7 @@ def run(input_dir, attempt, key_file, limit, workers=1):
     forms = set()
     for path in paths:
         if path.suffix.lower() in HANDLERS:
-            ids.learn(path.stem)
-            for part in path.parts[:-1]:
+            for part in path_identities(path):
                 ids.learn(part)
     counts, omitted, accepted = Counter(), [], []
     for path, names, reason in file_workers.ordered_map(file_workers.discover, (root, limit), sorted(paths), workers):

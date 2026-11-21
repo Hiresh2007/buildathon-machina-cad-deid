@@ -194,6 +194,46 @@ def structural(value):
     )
 
 
+
+# These describe collections of artifacts or manufacturing operations. A repository,
+# organization or user account can still have the same spelling.
+ENGINEERING_DIRECTORIES = frozenset("""
+    blueprints cadfiles cadmodels clamps datasheets diagrams documentation downloads drawingsheets
+    dxffiles enclosures fabrication fasteners firmware fixtures gearboxes gerbers grippers
+    harnesses holders layouts manuals machining machiningfiles manufacturing materials
+    meshes motors originals outputs pcbs pdfs plans plates printables prototypes references
+    renderings revisions schematics sheetmetal spacers stepfiles stls subassemblies
+    templates tooling tutorials weldments washers wiring
+""".split()) | {
+    "assembly files", "assembly instructions", "assembly models", "bom exports",
+    "cad documentation", "cad exports", "cad files", "cad models", "cut sheets",
+    "drawing files", "electrical diagrams", "engineering drawings", "fabrication drawings",
+    "laser cut", "laser cutting", "part drawings", "part files", "pdf drawings",
+    "print files", "production drawings", "reference drawings", "sheet metal",
+    "solidworks files", "step files", "sub assemblies", "technical drawings", "wiring diagrams",
+}
+
+
+def engineering_directory(value, parents):
+    name = re.sub(r"[ _-]+", " ", canonical(value))
+    if name not in ENGINEERING_DIRECTORIES:
+        return False
+    # Preserve the role of the component in provider and home-directory paths.
+    if parents and canonical(parents[-1]) in {"users", "home"}:
+        return False
+    if len(parents) in {2, 3} and canonical(parents[0]) == "sources":
+        provider = canonical(parents[1])
+        if provider in {"github", "gitlab", "grabcad"} or (provider == "web" and len(parents) == 2):
+            return False
+    return True
+
+
+def path_identities(path):
+    yield path.stem
+    for i, part in enumerate(path.parts[:-1]):
+        if not engineering_directory(part, path.parts[:i]):
+            yield part
+
 def canonical(value):
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 

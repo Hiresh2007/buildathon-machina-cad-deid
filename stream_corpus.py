@@ -268,8 +268,7 @@ def global_inventory(db, key):
         path = PurePosixPath(path)
         paths.append(path)
         if ext in pipeline.HANDLERS:
-            names.add(path.stem)
-            names.update(path.parts[:-1])
+            names.update(pipeline.path_identities(path))
     for word in names:
         ids.learn(word)
     del names
