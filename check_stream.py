@@ -59,6 +59,26 @@ def test():
             else:
                 assert not fails
 
+        # Deduplication verifies the physical contents on every read, including
+        # subsequent opens of the same path and a different file with the same bytes.
+        probe = {"path": a, "ext": ".step", "md5": "", "bytes": len(paths[a]), "source_sha": None}
+        options = s.options(argv)
+        with mock.patch.object(pipeline.HANDLERS[".step"], "discover",
+                               wraps=pipeline.HANDLERS[".step"].discover) as discover:
+            first_result = s.source_identities(probe, options)
+            duplicate = cache / "duplicate.step"
+            duplicate.write_bytes(paths[a])
+            second = s.source_identities(dict(probe, path="duplicate.step"), options)
+            assert first_result == second and discover.call_count == 1
+            second[3].clear()
+            assert s.source_identities(probe, options) == first_result
+            duplicate.write_bytes(b"x" * len(paths[a]))
+            altered = s.source_identities(dict(probe, path="duplicate.step",
+                                               source_sha=first_result[2]), options)
+            assert altered[:2] == ("discover", "input differs from discovery snapshot")
+            assert discover.call_count == 1
+            duplicate.unlink()
+
         (cache / b).write_bytes(b"x" * len(paths[b]))
         run("--work-limit", "2", fails=True)
         run(fails=True)

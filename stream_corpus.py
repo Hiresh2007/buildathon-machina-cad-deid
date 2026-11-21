@@ -6,7 +6,7 @@ import hashlib
 import http.client
 import itertools
 import json
-from collections import Counter
+from collections import Counter, OrderedDict
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -27,6 +27,7 @@ from workers import worker_context
 NATIVE_TYPES = {'.sldprt', '.sldasm', '.slddrw', '.ipt', '.iam', '.idw'}
 
 MIB = 1024 * 1024
+_discoveries = OrderedDict()
 MIRROR = "https://machina-input.joinbuilders.org/"
 _connections = threading.local()
 UPLOADER_SHA = "c5cc9d94525d7fac3a380233f781bacb9df78d6ccb7283b3043ca368efd1ee77"
@@ -201,6 +202,14 @@ def source_identities(row, args):
         data, sha = fetch(row, args)
     except SourceError as exc:
         return "discover", str(exc), None, (), ()
+    # Every path is read and verified before reuse. Parsing the same large
+    # document again in this worker would produce the same identity evidence.
+    cache_key = (row["ext"], sha)
+    use_cache = len(data) >= 128 * 1024
+    if use_cache and cache_key in _discoveries:
+        status, reason, words, forms = _discoveries[cache_key]
+        _discoveries.move_to_end(cache_key)
+        return status, reason, sha, set(words), list(forms)
     if row["ext"] in NATIVE_TYPES:
         import inspect_native
         handler = inspect_native
@@ -215,6 +224,13 @@ def source_identities(row, args):
                  for kind, name, target in getattr(names, "forms", ())]
     except (ValueError, OSError):
         return "omitted", "invalid or unsupported document structure", sha, (), ()
+    if use_cache and len(words) + len(forms) <= 2048:
+        size = sum(len(word) + 96 for word in words)
+        size += sum(len(kind) + len(raw) + len(target) + 256 for kind, raw, target in forms)
+        if size <= 192 * 1024:
+            _discoveries[cache_key] = (status, reason, frozenset(words), tuple(forms))
+            if len(_discoveries) > 64:
+                _discoveries.popitem(last=False)
     return status, reason, sha, words, forms
 
 
