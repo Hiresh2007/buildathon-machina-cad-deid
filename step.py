@@ -102,7 +102,8 @@ def _scan(data, handler, emit):
     word, head, previous, stack = None, None, None, []
     record_id = None
     body = False
-    output = [] if emit else None
+    output = []
+    copied = 0
     for match in TOKEN.finditer(source):
         if match['record'] is not None:
             current = int(match['number'])
@@ -110,8 +111,6 @@ def _scan(data, handler, emit):
                 raise ValueError('unexpected or duplicate geometry record')
             defined.add(current)
             used.update(map(int, REFERENCE.findall(match['arguments'])))
-            if emit:
-                output.append(match[0])
             word, previous = None, ';'
             continue
         token = match[0]
@@ -176,11 +175,17 @@ def _scan(data, handler, emit):
                 raise ValueError("invalid token")
             word = token.upper() if IDENTIFIER.fullmatch(token) else None
             previous = token.upper()
-        if emit:
-            output.append(result)
+        if emit and result != token:
+            output.extend((source[copied:match.start()], result))
+            copied = match.end()
     if state != "done" or head is not None or not defined or not used.issubset(defined):
         raise ValueError("incomplete STEP data or dangling reference")
-    return "".join(output).encode(encoding) if emit else None
+    if not emit:
+        return None
+    if not output:
+        return data
+    output.append(source[copied:])
+    return "".join(output).encode(encoding)
 
 
 def discover(data):
