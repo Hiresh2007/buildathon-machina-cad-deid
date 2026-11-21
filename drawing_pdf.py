@@ -131,6 +131,10 @@ class UnsupportedPDF(ValueError):
     """A neutral, safe-to-report reason for omitting a PDF."""
 
 
+class UnindexedLink(UnsupportedPDF):
+    """The visible link cannot be mapped to an editable PDF object."""
+
+
 def library():
     try:
         import pymupdf
@@ -687,6 +691,8 @@ def process(data, alias, redact, reference, write):
                         )
                         if result != link[key]:
                             link[key] = result
+                            if not 0 < link.get("xref", 0) < doc.xref_length():
+                                raise UnindexedLink("unindexed PDF link could not be rewritten")
                             page.update_link(link)
                 redact_page(page, alias, redact, numeric_title)
             else:
