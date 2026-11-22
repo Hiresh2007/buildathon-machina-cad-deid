@@ -6,7 +6,8 @@ import hashlib
 import http.client
 import itertools
 import json
-from collections import Counter, OrderedDict
+import multiprocessing
+from collections import Counter, OrderedDict, deque
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -18,7 +19,7 @@ import sys
 import tempfile
 import threading
 import time
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from urllib.parse import unquote, urlsplit
 
 import pipeline
@@ -198,10 +199,16 @@ def check_space(folder, extra, args):
 
 
 def source_identities(row, args):
+    if "prefetch_error" in row.keys():
+        return "discover", row["prefetch_error"], None, (), ()
     try:
-        data, sha = fetch(row, args)
+        data, sha = verified(row, row["prefetched_input"]) if "prefetched_input" in row.keys() else fetch(row, args)
     except SourceError as exc:
         return "discover", str(exc), None, (), ()
+    prior = row["committed_discovery"] if "committed_discovery" in row.keys() else None
+    if prior and prior[0] == sha:
+        # The first path's words and typed forms are already in the shared transaction log.
+        return prior[1], prior[2], sha, (), ()
     # Every path is read and verified before reuse. Parsing the same large
     # document again in this worker would produce the same identity evidence.
     cache_key = (row["ext"], sha)
@@ -415,10 +422,59 @@ def drain(db, args, final=False):
                 Path(root).rmdir()
 
 
-def phase_rows(db, phase):
+def duplicate_discoveries(db):
+    """Track repeated manifest entries for the current discovery pass."""
+    if not db.execute("SELECT 1 FROM files WHERE status='discover' LIMIT 1").fetchone():
+        return {}
+    size_limit = 128 * 1024
+    return {
+        tuple(key): None for key in db.execute(
+            "SELECT ext,md5,bytes FROM files WHERE bytes>=? AND md5<>'' "
+            "GROUP BY ext,md5,bytes HAVING COUNT(*)>1", (size_limit,)
+        )
+    }
+
+
+def prefetch_small_sources(rows, args):
+    """Overlap small mirror transfers with parsing, keeping native readers in separate processes."""
+    byte_limit = getattr(args, "prefetch_kib", 128) * 1024
+    def take(item):
+        row, transfer = item
+        if transfer is not None:
+            try:
+                row["prefetched_input"] = transfer.result()[0]
+            except SourceError as error:
+                row["prefetch_error"] = str(error)
+        return row
+
+    pending = deque()
+    with ThreadPoolExecutor(max_workers=args.prefetch_small) as pool:
+        for row in rows:
+            transfer = None
+            if row["bytes"] <= byte_limit and (not args.cache or not (args.cache / row["path"]).is_file()):
+                transfer = pool.submit(fetch, row, args)
+            pending.append((row, transfer))
+            if len(pending) >= 2 * args.prefetch_small:
+                yield take(pending.popleft())
+        while pending:
+            yield take(pending.popleft())
+
+
+def with_discovery_hints(rows, candidates):
+    for row in rows:
+        entry = dict(row)
+        known = candidates.get((row["ext"], row["md5"], row["bytes"]))
+        if known:
+            entry["committed_discovery"] = known
+        yield entry
+
+
+def phase_rows(db, phase, has_copies=False):
+    representatives = " AND id NOT IN (SELECT file_id FROM discovery_copy)" if has_copies else ""
     last = 0
     while True:
-        batch = list(db.execute("SELECT * FROM files WHERE status=? AND id>? ORDER BY id LIMIT 256", (phase, last)))
+        batch = list(db.execute("SELECT * FROM files WHERE status=? AND id>?" + representatives +
+                                " ORDER BY id LIMIT 256", (phase, last)))
         if not batch:
             return
         last = batch[-1]['id']
@@ -426,17 +482,22 @@ def phase_rows(db, phase):
 
 
 def start_writer(index):
-    global _writer_index
+    global _writer_index, _verified_drawings
     _writer_index = index
+    _verified_drawings = OrderedDict()
 
 
 def transformed(row, args):
     try:
-        data, _ = fetch(row, args)
+        data, source_sha = fetch(row, args)
     except SourceError as error:
         return 'ready', str(error), None, None
     index = _writer_index
     index.link_counts = Counter()
+    verify_drawing = row['ext'] == '.pdf' and args.verify_pdfs
+    if verify_drawing and source_sha in _verified_drawings:
+        _verified_drawings.move_to_end(source_sha)
+        return 'staged', '', _verified_drawings[source_sha], index.link_counts
     handler = pipeline.HANDLERS[row['ext']]
     try:
         output = handler.rewrite(data, index.ids.alias, index.ids, lambda value: index.reference(row['path'], value))
@@ -448,17 +509,26 @@ def transformed(row, args):
         return 'omitted', 'unindexed PDF link could not be rewritten', None, None
     except (ValueError, OSError):
         return 'omitted', 'rewrite or structural validation failed', None, None
-    if row['ext'] == '.pdf' and args.verify_pdfs:
+    if verify_drawing:
         from check_native_formats import verified_pdf
         try:
             output = verified_pdf(data, output, index.ids, Counter())
         except Exception:
             return 'omitted', 'independent PDF rendering or metadata validation failed', None, None
+        # The only path-dependent operation is reference(), which counts every
+        # nonempty path it resolves or masks. Reuse only path-independent PDFs
+        # after the input digest and the emitted drawing have both been checked.
+        if not index.link_counts and len(output) <= 512 * 1024:
+            _verified_drawings[source_sha] = output
+            if len(_verified_drawings) > 32:
+                _verified_drawings.popitem(last=False)
     return 'staged', '', output, index.link_counts
 
 
 def process_rows(rows, args, operation, index=None):
-    context = worker_context()
+    # Discovery prefetch creates network threads before all workers have started.
+    threaded = operation is source_identities and getattr(args, 'prefetch_small', 0) and not args.offline
+    context = multiprocessing.get_context('spawn') if threaded else worker_context()
     with ProcessPoolExecutor(max_workers=args.workers, mp_context=context, initializer=start_writer,
                              initargs=(index,)) as pool:
         pending = {pool.submit(operation, dict(row), args): row for row in itertools.islice(rows, args.workers)}
@@ -489,7 +559,13 @@ def work(db, args, key):
             ids, index = global_inventory(db, key)
         discovery = phase == 'discover'
         operation = source_identities if discovery else transformed
-        rows = itertools.islice(phase_rows(db, phase), remaining)
+        has_copies = discovery and marker(db, 'verified discovery copies')
+        rows = itertools.islice(phase_rows(db, phase, has_copies), remaining)
+        if discovery:
+            candidates = duplicate_discoveries(db)
+            rows = with_discovery_hints(rows, candidates)
+            if getattr(args, 'prefetch_small', 0) and not args.offline:
+                rows = prefetch_small_sources(rows, args)
         for row, result in process_rows(rows, args, operation, index):
             if remaining is not None:
                 remaining -= 1
@@ -499,7 +575,15 @@ def work(db, args, key):
                 with db:
                     db.executemany("INSERT OR IGNORE INTO identity VALUES (?)", ((word,) for word in words))
                     db.executemany("INSERT OR IGNORE INTO pdf_identity_form VALUES (?,?,?)", forms)
-                    db.execute("UPDATE files SET status=?,reason=?,source_sha=? WHERE id=?", (status, reason, sha, row['id']))
+                    db.execute("UPDATE files SET status=?,reason=?,source_sha=COALESCE(?,source_sha) WHERE id=?",
+                               (status, reason, sha, row['id']))
+                    if has_copies and sha:
+                        db.execute("UPDATE files SET status=?,reason=? WHERE id IN "
+                                   "(SELECT file_id FROM discovery_copy WHERE representative=?)",
+                                   (status, reason, row['id']))
+                identity_key = (row["ext"], row["md5"], row["bytes"])
+                if sha and identity_key in candidates:
+                    candidates[identity_key] = (sha, status, reason)
                 continue
             status, reason, output, counts = result
             if status != 'staged':
@@ -537,6 +621,10 @@ def work(db, args, key):
 
 def options(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prefetch-small", type=int, default=0, metavar="N",
+                        help="overlap N verified mirror reads for small discovery inputs")
+    parser.add_argument("--prefetch-kib", type=int, default=128, metavar="KIB",
+                        help="largest input read ahead from the mirror (default: 128 KiB)")
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--state", required=True, type=Path, help="private SQLite checkpoint and default HMAC key")
     parser.add_argument("--attempt", required=True, type=Path, help="new numbered attempt-N staging folder")
@@ -564,8 +652,8 @@ def options(argv=None):
         if path is not None:
             setattr(args, name, path.expanduser().resolve())
     args.key_file = args.key_file or args.state / "alias.key"
-    if (min(args.workers, args.max_mib, args.chunk_mib, args.state_mib, args.timeout) < 1
-            or min(args.retries, args.reserve_mib) < 0 or (args.work_limit is not None and args.work_limit < 1)):
+    if (min(args.workers, args.max_mib, args.chunk_mib, args.state_mib, args.timeout, args.prefetch_kib) < 1
+            or min(args.retries, args.reserve_mib, args.prefetch_small) < 0 or (args.work_limit is not None and args.work_limit < 1)):
         parser.error("invalid worker, size, timeout, retry or work limit")
     if not re.fullmatch(r"attempt-[1-9]\d*", args.attempt.name) or (args.offline and not args.cache):
         parser.error("use an official attempt-N directory and provide a cache when offline")

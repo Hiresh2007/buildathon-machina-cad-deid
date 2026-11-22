@@ -46,3 +46,29 @@ python3 stream_corpus.py \
 ```
 
 Each invocation of the official uploader uses its resume checks. The runner pins its SHA-256, binds the destination to the checkpoint and sends only the staged corpus, then the reviewed source bundle and final report. A failed or interrupted upload keeps the files for another try. The operator verifies the live team folder and submits it in the track interface. The local regression exercises the archive destination without needing cloud credentials.
+
+During discovery, the coordinator shares evidence for identical files across workers. It uses manifest size, format and MD5 to identify candidates. The worker still reads every physical input and verifies its SHA-256 before reusing a result committed in the current pass. A mismatch goes through the normal parser. A paired check on 30 distinct duplicate groups covered 19.3 MB across seven formats and produced identical identity and status evidence.
+
+For a network-limited mirror run, `--prefetch-small 6` overlaps six small transfers with the normal parser workers. The buffer holds at most twelve queued inputs of up to 128 KiB each. Cached and larger inputs follow the existing path. Each received input is checked against the manifest before parsing. On 96 uncached organizer files in four alternating groups, two workers took 27.67 seconds without prefetch and 9.45 seconds with it. Source digests, file dispositions and all identity evidence agreed.
+
+Use `--prefetch-small 6 --prefetch-kib 512` to include files up to 512 KiB in those reads. The twelve queued input payloads can then occupy up to 6 MiB. Two separate groups of 96 uncached files between 128 and 512 KiB took 36.88 and 29.06 seconds with the wider limit. The default limit took 59.39 and 46.63 seconds on the same groups. Both runs produced the same source digests, decisions and identity observations for all 192 paths.
+
+## Seeding a larger manifest from completed discovery
+
+A compatible drawing checkpoint can initialize a new full-manifest state offline. Use the same discovery size limit and native-property option as the drawing run. Use two new paths for the state and numbered staging folder.
+
+```sh
+python3 seed_discovery.py \
+  --donor /private/drawings/checkpoint.sqlite3 \
+  --source-hashes /private/earlier-full/checkpoint.sqlite3 \
+  --manifest /private/machina/manifest.tsv --state /private/new-full \
+  --attempt /private/new-staging/attempt-1 --max-mib 128 --learn-native --verify-pdfs
+```
+
+The command reads a transactionally consistent snapshot of each input database, creates a new private alias key, and exits after it writes the new checkpoint. Run `stream_corpus.py` separately with the same manifest, state, attempt and strategy options to continue.
+
+Every donor path, size, organizer MD5, extension and mirror URL must occur in the target manifest. The importer checks the two sources' SHA-256s wherever both have verified a path. It restores a drawing omitted during rewriting to its pre-rewrite discovery state. A later full-corpus rewrite uses the full inventory, links and independent PDF checks.
+
+The optional full checkpoint contributes verified source hashes. Its older words, typed forms, output hashes and paths never enter the new state. Eligible inputs outside the donor still require current discovery. When the earlier run verified identical bytes at several paths of the same type and size, a successful representative contributes discovery for the group in one transaction. A failed representative keeps its pinned digest and stays pending. A source hash is checked again when its artifact is rewritten.
+
+`python3 -m unittest test_seed_discovery` compares the seeded and fresh per-file states, hashes, words and typed forms across a retry and checks rejection of conflicting source snapshots.
