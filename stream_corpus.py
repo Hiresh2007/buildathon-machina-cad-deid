@@ -426,17 +426,22 @@ def phase_rows(db, phase):
 
 
 def start_writer(index):
-    global _writer_index
+    global _writer_index, _verified_drawings
     _writer_index = index
+    _verified_drawings = OrderedDict()
 
 
 def transformed(row, args):
     try:
-        data, _ = fetch(row, args)
+        data, source_sha = fetch(row, args)
     except SourceError as error:
         return 'ready', str(error), None, None
     index = _writer_index
     index.link_counts = Counter()
+    verify_drawing = row['ext'] == '.pdf' and args.verify_pdfs
+    if verify_drawing and source_sha in _verified_drawings:
+        _verified_drawings.move_to_end(source_sha)
+        return 'staged', '', _verified_drawings[source_sha], index.link_counts
     handler = pipeline.HANDLERS[row['ext']]
     try:
         output = handler.rewrite(data, index.ids.alias, index.ids, lambda value: index.reference(row['path'], value))
@@ -448,12 +453,19 @@ def transformed(row, args):
         return 'omitted', 'unindexed PDF link could not be rewritten', None, None
     except (ValueError, OSError):
         return 'omitted', 'rewrite or structural validation failed', None, None
-    if row['ext'] == '.pdf' and args.verify_pdfs:
+    if verify_drawing:
         from check_native_formats import verified_pdf
         try:
             output = verified_pdf(data, output, index.ids, Counter())
         except Exception:
             return 'omitted', 'independent PDF rendering or metadata validation failed', None, None
+        # The only path-dependent operation is reference(), which counts every
+        # nonempty path it resolves or masks. Reuse only path-independent PDFs
+        # after the input digest and the emitted drawing have both been checked.
+        if not index.link_counts and len(output) <= 512 * 1024:
+            _verified_drawings[source_sha] = output
+            if len(_verified_drawings) > 32:
+                _verified_drawings.popitem(last=False)
     return 'staged', '', output, index.link_counts
 
 
