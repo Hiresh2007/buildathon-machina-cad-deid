@@ -441,6 +441,8 @@ def transformed(row, args):
         output = handler.rewrite(data, index.ids.alias, index.ids, lambda value: index.reference(row['path'], value))
         for _ in handler.discover(output):
             pass
+    except pipeline.drawing_pdf.UnsupportedFont:
+        return 'omitted', 'unsupported embedded PDF font subtype', None, None
     except pipeline.drawing_pdf.UnindexedLink:
         return 'omitted', 'unindexed PDF link could not be rewritten', None, None
     except (ValueError, OSError):
