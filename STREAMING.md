@@ -41,7 +41,7 @@ The track page supplies the team's destination, upload token, and organizer `upl
 python3 stream_corpus.py \
   --manifest /private/machina/manifest.tsv --state /private/machina/checkpoint \
   --cache /mounted/input --attempt /private/machina/staging/attempt-1 \
-  --upload-to gs://builders-machina-submissions-1120/teams/YOUR-TEAM-ID/attempt-1/ \
+  --upload-to gs://builders-machina-submissions-use1/teams/YOUR-TEAM-ID/attempt-1/ \
   --uploader /private/tools/upload.py --token-file /private/machina/renewal-token
 ```
 
