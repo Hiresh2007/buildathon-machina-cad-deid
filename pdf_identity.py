@@ -4,7 +4,21 @@ from collections import defaultdict
 from pathlib import PurePosixPath
 import re
 
-from naming import canonical, structural
+from naming import DIMENSION, canonical, structural
+
+
+PART_REPORT = "Corroborated part codes share a pseudonym across drawings and models while retaining mechanical descriptors."
+
+MODEL_EXTENSIONS = {".sldprt", ".sldasm", ".step", ".stp", ".ipt", ".iam", ".fcstd", ".sat", ".stl", ".3mf"}
+PART_WORDS = frozenset("""
+    assembly adapter axle bar bearing block body bolt bottom bracket bushing cable cap clamp clip collar
+    connector cover coupling door enclosure flange frame front gasket gear guide handle head hinge holder
+    housing insert knob left lever lid lower mount mounting motor nut panel pin pipe plate pulley rail rear
+    right ring rod roller screw shaft shell side spacer spindle spring support switch top tube upper valve
+    washer wheel
+""".split())
+PART_CODE = re.compile(r"(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9][A-Za-z0-9._-]*(?: [A-Za-z0-9][A-Za-z0-9._-]*){0,2}\Z")
+STANDARD_CODE = re.compile(r'^(?:DIN|ISO|ANSI|ASTM|ASME|IEC|SAE|EN|BS|JIS|REV|VER|V)[\s._-]*(?=\d)', re.I)
 
 
 PERSON_FIELDS = {
@@ -101,8 +115,9 @@ def restore_directory_forms(root, attempt, paths, ids):
 
     limit = 64 * 1024 * 1024
     report = attempt / "README.txt"
-    if report.is_file():
-        cap = re.search(r"(?:--max-mib\s+|Input size ceiling:\s*)(\d+)", report.read_text(encoding="utf-8"))
+    notes = report.read_text(encoding="utf-8") if report.is_file() else ""
+    if notes:
+        cap = re.search(r"(?:--max-mib\s+|Input size ceiling:\s*)(\d+)", notes)
         if cap and int(cap[1]) > 0:
             limit = int(cap[1]) * 1024 * 1024
     forms = set()
@@ -115,7 +130,7 @@ def restore_directory_forms(root, attempt, paths, ids):
                 forms.update(drawing_pdf.discover(source.read_bytes()).forms)
         except (OSError, ValueError):
             continue
-    resolve(forms, ids)
+    resolve(forms, ids, paths if PART_REPORT in notes.splitlines() else ())
 
 
 class Observations(set):
@@ -177,7 +192,40 @@ def typed(role, value, alias):
     return alias(value)
 
 
-def resolve(forms, ids):
+def link_part_names(paths, ids):
+    """Keep the mechanical suffix when other files in the same collection confirm a part code."""
+    groups = defaultdict(list)
+    for path in paths:
+        ext = path.suffix.casefold()
+        if ext not in MODEL_EXTENSIONS and ext not in {'.dxf', '.pdf'}:
+            continue
+        stem = path.stem
+        scope = path.parts[:3] if len(path.parts) >= 4 and path.parts[0].casefold() == 'sources' else path.parent
+        for space in re.finditer(r'\s+', stem):
+            prefix, suffix = stem[:space.start()], stem[space.end():]
+            words = re.split(r'[\s_-]+', canonical(suffix))
+            if (len(words) > 4 or not all(word in PART_WORDS for word in words) or len(prefix) > 55
+                    or not PART_CODE.fullmatch(prefix) or STANDARD_CODE.match(prefix)
+                    or structural(prefix) or DIMENSION.search(prefix)):
+                continue
+            groups[scope, canonical(prefix)].append((stem, suffix, ext))
+            break
+    proposals = defaultdict(set)
+    for (_, prefix), records in groups.items():
+        forms = {canonical(stem) for stem, _, _ in records}
+        extensions = {ext for _, _, ext in records}
+        if len(forms) == 1 and not ('.pdf' in extensions and extensions & MODEL_EXTENSIONS):
+            continue
+        replacement = ids.alias(prefix)
+        ids.learn(prefix)
+        for stem, suffix, _ in records:
+            proposals[canonical(stem)].add(replacement + ' ' + suffix)
+    for name, values in proposals.items():
+        if len({canonical(value) for value in values}) == 1:
+            ids.replacements.setdefault(name, min(values))
+
+
+def resolve(forms, ids, paths=(), *, link_parts=True):
     domains = defaultdict(set)
     confirmed = defaultdict(set)
     titles = set()
@@ -200,6 +248,8 @@ def resolve(forms, ids):
             and roots == domains[login]
         ):
             ids.replacements[login] = ids.alias(next(iter(roots)))
+    if link_parts:
+        link_part_names(paths, ids)
     for title in sorted(titles):
         ids.replacements[canonical(title)] = asset_title(title, ids.alias)
     for spelling in sorted(ids.replacements):

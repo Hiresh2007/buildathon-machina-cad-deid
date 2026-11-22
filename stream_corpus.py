@@ -299,7 +299,7 @@ def global_inventory(db, key):
         ids.learn(word.decode("utf-8", "surrogatepass") if isinstance(word, bytes) else word)
     forms = ((kind, name.decode("utf-8", "surrogatepass"), target.decode("utf-8", "surrogatepass"))
              for kind, name, target in db.execute("SELECT kind,spelling,target FROM pdf_identity_form"))
-    pipeline.pdf_identity.resolve(forms, ids)
+    pipeline.pdf_identity.resolve(forms, ids, paths)
     return ids, pipeline.PathIndex(paths, ids)
 
 
@@ -329,6 +329,7 @@ def docs(db, args, index):
         out.write("Machina CAD de-identification manifest run\n\n")
         out.write("Use code/STREAMING.md to reproduce. Install dependencies listed in code/.\n")
         out.write(f"Input manifest SHA-256: {digest(args.manifest)}\nInput size ceiling: {args.max_mib} MiB.\n")
+        out.write(pipeline.pdf_identity.PART_REPORT + "\n")
         total, size, no_md5 = db.execute("SELECT COUNT(*),SUM(bytes),SUM(md5='') FROM files").fetchone()
         out.write(f"Manifest: {total} inputs, {size or 0} bytes, {no_md5 or 0} multipart rows without organizer MD5.\n")
         out.write("Checked byte counts and available organizer MD5s. Checked both passes against the discovery SHA-256.\n")

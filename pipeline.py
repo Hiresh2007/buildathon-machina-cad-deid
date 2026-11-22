@@ -187,7 +187,7 @@ def _write_code(staged):
         "pipeline.py", "workers.py", "step.py", "dxf.py", "naming.py", "mesh.py", "drawing_pdf.py", "pdf_identity.py",
         "sat.py", "svg.py", "fcstd.py", "manufacturing.py", "check_manufacturing.py", "vrml.py", "check_vrml.py", "requirements.txt", "requirements-verify.txt", "check.py",
         "check_formats.py", "check_pdf_identity.py", "check_native_formats.py", "test_pdf_fidelity.py", "check_exchange.py", "check_geometry.py",
-        "check_dxf.py", "stream_corpus.py", "select_practice.py", "select_drawings.py", "screen_pdfs.py", "check_stream.py", "inspect_native.py", "NATIVE-AUDIT.md",
+        "check_dxf.py", "stream_corpus.py", "select_practice.py", "select_drawings.py", "screen_pdfs.py", "check_stream.py", "inspect_native.py", "NATIVE-AUDIT.md", "test_part_descriptors.py",
         "STREAMING.md", "README.md", "LICENSE",
     )
     for name in names:
@@ -227,7 +227,7 @@ def run(input_dir, attempt, key_file, limit, workers=1):
             forms.update(getattr(names, "forms", ()))
             accepted.append(path)
 
-    pdf_identity.resolve(forms, ids)
+    pdf_identity.resolve(forms, ids, paths)
     index = PathIndex(paths, ids)
     omitted = [(index.targets[str(path)], reason) for path, reason in omitted]
     attempt.parent.mkdir(parents=True, exist_ok=True)
@@ -254,6 +254,7 @@ def run(input_dir, attempt, key_file, limit, workers=1):
             "The key and private identity dictionary are excluded. See code/README.md for field coverage.",
             "", f"Input files observed: {len(paths)}. Output files: {sum(written.values())}.",
         ]
+        report.append(pdf_identity.PART_REPORT)
         report += [f"Written {ext}: {count}." for ext, count in sorted(written.items())]
         report += [f"Omitted ({reason}): {count}." for reason, count in sorted(counts.items())]
         report += [f"Path fields {label}: {count}." for label, count in sorted(index.link_counts.items())]
