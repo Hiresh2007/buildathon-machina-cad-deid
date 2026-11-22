@@ -155,6 +155,8 @@ The PDF metadata pass follows the cross-reference table and checks both ordinary
 
 ### Corporate names in drawing ownership notices
 
+The PDF reader uses the value after a printed field caption to identify the drafter, company or drawing number. For example, it keeps “Designer”, “Empresa” and “Zeichnungsnummer” on the page and replaces their identifying values. Empty fields, placeholders, standard identifiers and dimension labels retain their original text.
+
 The PDF reader recognizes named corporate holders after a copyright symbol, a copyright date, “property of” and “proprietary to.” It learns the company across documents while retaining the printed date and legal wording. A registered abbreviation such as “Inc.” can use the same identity with or without its final period. A sentence that names a manufacturer or person outside these contexts follows the ordinary field rules.
 
 In a check of 24 source drawings accepted by both builds, PDFium found all 25 expected company pseudonyms. Five original holder names had survived in the preceding output. None remained visible in those checked occurrences. All 18 checked legal phrases survived, including two occurrences of “property of” that the earlier build removed. Six other source or output pairs failed the separate drawing checks and are excluded from these counts. Run `python3 -m unittest test_ownership_notices` to check dates, legal text, dimensions, independent contacts, and abbreviated suffixes.

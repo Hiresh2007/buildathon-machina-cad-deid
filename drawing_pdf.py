@@ -84,11 +84,14 @@ DRAWING_CELL_LABELS = {
     "drawing no", "drawing no.", "drawing number", "drawing id", "drawing #",
     "dwg. no.", "dwg no.", "dwg no", "dwg. no", "dwg #", "drg no.", "drg no",
     "part number", "part no.", "part no", "part #", "p/n",
-    "zeichnungsnummer", "zeichnungs-nr.", "n° plan", "n° dessin", "numero disegno",
+    "zeichnungsnummer", "bauteilnummer", "zeichnungs-nr.", "n° plan", "n° dessin", "numero disegno",
 }
 CELL_ROLES = {**dict.fromkeys(PERSON_CELL_LABELS, "person"),
               **dict.fromkeys(COMPANY_CELL_LABELS, "organization"),
               **dict.fromkeys(DRAWING_CELL_LABELS, "drawing number")}
+INLINE_CELL = re.compile(r"^\s*(?P<label>[^:=]{2,30}?)\s*[:=]\s*(?P<value>[^:=]{1,96}?)\s*$")
+INLINE_PLACEHOLDERS = {"n/a", "na", "tbd", "tba", "none", "unknown", "not applicable", "not available"}
+
 # A neighboring integer or compact alphanumeric identifier can be a drawing
 # number. Exclude dimensions, material grades, dates and scale notation.
 DRAWING_CODE = re.compile(r"(?=.{4,45}\Z)(?=.*\d)[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*\Z")
@@ -603,16 +606,47 @@ def title_fields(records, document_title=""):
     return result
 
 
+def labelled_identity(text):
+    """Return the value span and role of an explicit drawing field."""
+    match = LABEL.match(text)
+    if match:
+        if meaningful(match["value"]):
+            role = "person" if match["label"].casefold() in PERSON_LABELS else ""
+            return (*match.span("value"), role)
+        return None
+
+    match = INLINE_CELL.fullmatch(text)
+    if not match:
+        return None
+    role = CELL_ROLES.get(" ".join(match["label"].lower().split()))
+    value = match["value"]
+    if not role or not meaningful(value) or structural(value) or value.casefold() in INLINE_PLACEHOLDERS:
+        return None
+    if role == "drawing number":
+        if (not DRAWING_CODE.fullmatch(value)
+                or re.fullmatch(r"(?:19|20)\d{2}(?:[-_]\d{1,2}){0,2}", value)
+                or re.fullmatch(r"(?:AISI|ASTM|DIN|ISO|EN|UNS|SAE)[-_]?\d+", value, re.I)):
+            return None
+    elif not pdf_identity.account(value):
+        words = re.findall(r"[^\W_]+", value)
+        if (not 1 <= len(words) <= 7 or not any(word.isalpha() for word in words)
+                or re.search(r"[^\w\s'’.,&-]", value)
+                or (role == "person" and (len(words) > 4 or any(
+                    not word.isalpha() or word.casefold() in TECHNICAL for word in words
+                )))):
+            return None
+    return (*match.span("value"), role)
+
+
 def matches(text, redactor, alias, strong=False, numeric_title=None):
     owners = notice_owners(text)
     if strong and not owners:
         yield len(text) - len(text.lstrip()), len(text.rstrip()), pdf_identity.typed(strong, text.strip(), alias)
         return
-    match = LABEL.match(text)
-    if not owners and match and meaningful(match["value"]):
-        start, end = match.span("value")
-        role = "person" if match["label"].casefold() in PERSON_LABELS else ""
-        yield start, end, pdf_identity.typed(role, match["value"], alias)
+    field_value = labelled_identity(text)
+    if not owners and field_value:
+        start, end, role = field_value
+        yield start, end, pdf_identity.typed(role, text[start:end], alias)
     elif not owners and (location := pdf_identity.visible_asset(text)):
         start, end = location
         replacement = pdf_identity.typed("title", text[start:end], alias)
@@ -923,10 +957,10 @@ def process(data, alias, redact, reference, write):
                         pdf_identity.typed("notice owner", text[start:stop], alias)
                     if i in strong and not owners:
                         pdf_identity.typed(strong[i], text.strip(), alias)
-                    match = LABEL.match(text)
-                    if not owners and match and meaningful(match["value"]):
-                        role = "person" if match["label"].casefold() in PERSON_LABELS else ""
-                        pdf_identity.typed(role, match["value"], alias)
+                    field_value = labelled_identity(text)
+                    if not owners and field_value:
+                        start, end, role = field_value
+                        pdf_identity.typed(role, text[start:end], alias)
                     elif location := pdf_identity.visible_asset(text):
                         start, end = location
                         pdf_identity.typed("title", text[start:end], alias)
