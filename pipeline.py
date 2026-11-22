@@ -253,7 +253,7 @@ def _write_code(staged):
     dest.mkdir()
     names = (
         "pipeline.py", "workers.py", "step.py", "dxf.py", "naming.py", "mesh.py", "drawing_pdf.py", "jpeg_authors.py", "pdf_identity.py",
-        "sat.py", "svg.py", "fcstd.py", "manufacturing.py", "check_manufacturing.py", "vrml.py", "check_vrml.py", "requirements.txt", "requirements-verify.txt", "check.py", "test_part_descriptors.py",
+        "sat.py", "svg.py", "fcstd.py", "manufacturing.py", "check_manufacturing.py", "vrml.py", "check_vrml.py", "requirements.txt", "requirements-verify.txt", "check.py", "test_part_descriptors.py", "test_ownership_notices.py",
         "check_formats.py", "check_pdf_identity.py", "check_native_formats.py", "test_pdf_fidelity.py", "test_jpeg_authors.py", "check_exchange.py", "check_geometry.py",
         "check_dxf.py", "stream_corpus.py", "select_practice.py", "select_drawings.py", "screen_pdfs.py", "check_stream.py", "inspect_native.py", "native_solidworks.py", "NATIVE-AUDIT.md",
         "STREAMING.md", "README.md", "LICENSE",

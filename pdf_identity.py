@@ -213,7 +213,9 @@ class Observations(set):
 
     def observe(self, role, value):
         value = value.strip()
-        if role == "person":
+        if role == "notice owner" and re.search(r"\b(?:inc|corp|ltd)$", value, re.I):
+            self.forms.add(("corporate suffix", value + ".", value))
+        elif role == "person":
             self.people.add(canonical(value))
             parsed = account(value)
             if not parsed:
@@ -350,7 +352,7 @@ def resolve(forms, ids, paths=(), *, link_models=True, link_parts=True):
             domains[name].add(root)
         elif kind == "confirmed":
             confirmed[name].add(root)
-        elif kind == "account":
+        elif kind in ("account", "corporate suffix"):
             ids.replacements[name] = ids.alias(root)
         elif kind == "asset":
             titles.add(raw)

@@ -96,6 +96,43 @@ CORPORATE = re.compile(
     r"^[^\d\n:;]{2,64}\b(?:inc\.?|ltd\.?|limited|llc|gmbh|corp\.?|corporation|s\.?a\.?r\.?l\.?)$",
     re.I,
 )
+NOTICE_MARK = re.compile(
+    r"(?:\bcopyright\b[ \t]*(?:©|\(c\))?|©|\(c\)(?=[ \t]*(?:19|20)\d\d)|"
+    r"\b(?:sole[ \t]+|exclusive[ \t]+)?property[ \t]+of\b|\bproprietary[ \t]+to\b)", re.I
+)
+NOTICE_PREFIX = re.compile(
+    r"[ \t,:.\-–—]*(?:(?:19|20)\d{2}(?:[ \t]*[-–,/][ \t]*(?:(?:19|20)?\d{2}))*"
+    r"[ \t,:.\-–—]*)?(?:by[ \t]+)?", re.I
+)
+OWNER_WORD = r"[^\W_][\w&'.’\-]*"
+NOTICE_OWNER = re.compile(
+    OWNER_WORD + r"(?:(?:[ \t]+|,[ \t]*)" + OWNER_WORD + r"){0,7}?(?:,?[ \t]+)"
+    r"(?:incorporated|inc\.?|corporation|corp\.?|limited|ltd\.?|l\.?l\.?c\.?|gmbh|"
+    r"s\.?a\.?r\.?l\.?|pvt\.?\s+ltd\.?|s\.?p\.?a\.?)(?![\w-])", re.I
+)
+NOTICE_RIGHTS = re.compile(r"\ball[ \t]+rights[ \t]+reserved\b", re.I)
+NOTICE_BOILERPLATE = {
+    "all", "rights", "reserved", "copyright", "this", "is", "the", "drawing", "property",
+    "proprietary", "subject", "notice", "express", "written", "permission", "without",
+    "disclosure", "part", "or", "reproduction", "using", "consent", "use", "any",
+}
+
+
+def notice_owners(text):
+    """Return company spans in explicit ownership notices, keeping legal text and dates."""
+    result = []
+    for mark in NOTICE_MARK.finditer(text):
+        start = NOTICE_PREFIX.match(text, mark.end()).end()
+        company = NOTICE_OWNER.match(text, start)
+        if company is None:
+            continue
+        value = company.group().rstrip(".")
+        if (4 <= len(value) <= 85 and not structural(value)
+                and not NOTICE_BOILERPLATE.intersection(re.findall(r"[^\W_]+", value.casefold()))):
+            result.append((start, start + len(value)))
+    return result
+
+
 TECHNICAL = {
     "assembly",
     "material",
@@ -520,7 +557,7 @@ def title_fields(records, document_title=""):
     ]
     for index, (text, _, direction) in enumerate(records):
         plain = text.strip().rstrip(":").casefold()
-        if CORPORATE.fullmatch(text.strip()):
+        if CORPORATE.fullmatch(text.strip()) and not notice_owners(text):
             result[index] = "organization"
         role = CELL_ROLES.get(plain)
         if role is None or direction[0] < 0.98:
@@ -567,21 +604,38 @@ def title_fields(records, document_title=""):
 
 
 def matches(text, redactor, alias, strong=False, numeric_title=None):
-    if strong:
+    owners = notice_owners(text)
+    if strong and not owners:
         yield len(text) - len(text.lstrip()), len(text.rstrip()), pdf_identity.typed(strong, text.strip(), alias)
         return
     match = LABEL.match(text)
-    if match and meaningful(match["value"]):
+    if not owners and match and meaningful(match["value"]):
         start, end = match.span("value")
         role = "person" if match["label"].casefold() in PERSON_LABELS else ""
         yield start, end, pdf_identity.typed(role, match["value"], alias)
-    elif location := pdf_identity.visible_asset(text):
+    elif not owners and (location := pdf_identity.visible_asset(text)):
         start, end = location
         replacement = pdf_identity.typed("title", text[start:end], alias)
         if replacement != text[start:end]:
             yield start, end, replacement
     else:
-        general = list(redactor.matches(text))
+        if owners:
+            # A different drawing can teach the shared index an entire legal notice.
+            # Search only the surrounding text so that learned phrases cannot swallow
+            # boilerplate, the date, or an unrelated contact after the company.
+            protected = [*owners, *(m.span() for m in NOTICE_RIGHTS.finditer(text))]
+            for mark in NOTICE_MARK.finditer(text):
+                end = NOTICE_PREFIX.match(text, mark.end()).end()
+                protected.append((mark.start(), end if any(start == end for start, _ in owners) else mark.end()))
+            general = [(start, stop, alias(text[start:stop])) for start, stop in owners]
+            cursor = 0
+            for start, stop in sorted(protected) + [(len(text), len(text))]:
+                if cursor < start:
+                    general.extend((a + cursor, b + cursor, replacement)
+                                   for a, b, replacement in redactor.matches(text[cursor:start]))
+                cursor = max(cursor, stop)
+        else:
+            general = list(redactor.matches(text))
         if numeric_title:
             # A numeric drawing number can also occur as a dimension on an
             # unrelated drawing. Restrict this typed title to its own document.
@@ -864,10 +918,13 @@ def process(data, alias, redact, reference, write):
                     alias(street)
                 for i, (text, _, _) in enumerate(records):
                     alias.observe_hosts(text)
-                    if i in strong:
+                    owners = notice_owners(text)
+                    for start, stop in owners:
+                        pdf_identity.typed("notice owner", text[start:stop], alias)
+                    if i in strong and not owners:
                         pdf_identity.typed(strong[i], text.strip(), alias)
                     match = LABEL.match(text)
-                    if match and meaningful(match["value"]):
+                    if not owners and match and meaningful(match["value"]):
                         role = "person" if match["label"].casefold() in PERSON_LABELS else ""
                         pdf_identity.typed(role, match["value"], alias)
                     elif location := pdf_identity.visible_asset(text):
