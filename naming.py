@@ -186,6 +186,46 @@ MEASURE = re.compile(
 )
 
 
+# A stock designation needs a recognized standard, its matching product family,
+# and a size. A manufacturer's name or an extra project number disqualifies it.
+STOCK_NUMBER = r"\d{1,4}(?:[.,]\d{1,3})?"
+STOCK_SIZES = r"[ldh]?" + STOCK_NUMBER + r"(?:x" + STOCK_NUMBER + r"){0,2}"
+THREAD_SIZE = r"m" + STOCK_NUMBER + "x" + STOCK_NUMBER + r"(?:x" + STOCK_NUMBER + r")?"
+STRENGTH_CLASS = r"(?: (?:4[.,][68]|5[.,][68]|6[.,]8|8[.,]8|9[.,]8|10[.,]9|12[.,]9)(?: a2k)?)?"
+STEEL_GRADE = r"(?: s(?:235|275|355)(?:jr|j0|j2|k2)?h?)?"
+STOCK_STANDARDS = {
+    "iso4762": (r"(?:socket head cap screw|hexagon socket head cap screw|screw)", THREAD_SIZE, STRENGTH_CLASS),
+    "iso4014": (r"(?:hexagon head bolt|hex head bolt|bolt)", THREAD_SIZE, STRENGTH_CLASS),
+    "iso4017": (r"(?:hexagon head screw|hex head screw|screw)", THREAD_SIZE, STRENGTH_CLASS),
+    "en10219": (r"(?:(?:rectangular|square|circular) hollow section)", STOCK_SIZES, STEEL_GRADE),
+    "en10056": (r"(?:angle bar|angle equal|angle unequal)", STOCK_SIZES, STEEL_GRADE),
+    "en10058": (r"flat bar", STOCK_SIZES, STEEL_GRADE),
+    "en10059": (r"square bar", STOCK_SIZES, STEEL_GRADE),
+    "en10060": (r"round bar", STOCK_SIZES, STEEL_GRADE),
+}
+STOCK_STANDARD = re.compile(r"(?<![a-z0-9])(?P<series>iso|en) ?(?P<number>[0-9]{4,5})(?![0-9])")
+STOCK_LABEL = {
+    code: re.compile(r"(?:" + kind + " " + size + r" std|std " + kind + " " + size
+                     + "|" + kind + " std " + size + ")" + material)
+    for code, (kind, size, material) in STOCK_STANDARDS.items()
+}
+
+
+def stock_designation(value):
+    """Recognize a fully specified catalog part without exempting mixed or project-specific titles."""
+    if not 9 <= len(value) <= 110:
+        return False
+    text = value.casefold()
+    if "iso" not in text and "en" not in text:
+        return False
+    text = " ".join(text.replace("_", " ").replace("×", "x").split())
+    spec = STOCK_STANDARD.search(text)
+    if not spec:
+        return False
+    label = STOCK_LABEL.get(spec["series"] + spec["number"])
+    return bool(label and label.fullmatch(text[:spec.start()] + "std" + text[spec.end():]))
+
+
 def structural(value):
     value = value.strip()
     tokens = re.split(r"[\s_\-]+", canonical(value))

@@ -124,3 +124,10 @@ A targeted audit of 114 original drawings covered 71 qualified accounts. Whole-f
 In a separate targeted sample, 29 drawings passed the independent graphics and metadata checks. They contained 43 identifying visible CAD filenames outside the typed author or title. Every expected model-filename pseudonym appeared after processing. The earlier version left 38 of the original strings visible. The updated output contained none of them. Three additional drawings fell outside the accepted verification set.
 
 Corroborated part codes keep the same pseudonym in standalone references and drawing or model filenames. The processor retains mechanical descriptors such as front cover. A physical check on the drawing manifest found 623 such paths, including 277 PDFs. Of 36 sampled drawings, 32 passed independent checks across 62 pages and 50 dimensions. All 30 matching document titles in those accepted drawings still matched their output filenames.
+
+
+### Standard stock descriptions
+
+A complete stock designation can include a standard, its part family, a size and a material grade. Matching filenames, references and STEP product labels retain that engineering information. Personal and organization metadata still use pseudonyms. An extra project name or an unknown standard prevents a label from qualifying. The accepted families cover metric screws, bolts, angles, bars and hollow sections. [ISO 4762](https://www.iso.org/standard/34460.html) · [EN 10058](https://landingpage.bsigroup.com/LandingPage/Undated?UPI=000000000030101470) · [EN 10219-2](https://www.dinmedia.de/de/norm/din-en-10219-2/306846734)
+
+Across the organizer manifest, 4,829 filenames met these rules. Open Cascade independently opened 24 source models and their processed counterparts across six standard families. Its STEP assembly reader recovered all 24 original public catalog labels in the revised models. The earlier output retained none of those labels. All 24 matched on topology, bounding box, surface area and volume. Run `python3 -m unittest test_standard_designations` for the filename, reference and typed-field cases.

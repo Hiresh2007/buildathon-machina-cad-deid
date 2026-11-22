@@ -2,6 +2,8 @@
 
 import re
 
+from naming import stock_designation
+
 
 # Records containing only neutral empty labels, numbers, enums or references
 # have no strings to rewrite. Parse these common records with a bounded grammar.
@@ -60,7 +62,7 @@ class Frame:
         self.label = ""
 
 
-def _role(frames, value):
+def _role(frames, value, writing=False):
     for f in reversed(frames):
         if f.name == "FILE_SCHEMA" or (f.name == "FILE_NAME" and f.field == 1):
             return "keep"
@@ -78,6 +80,8 @@ def _role(frames, value):
         if f.name in {"ADDRESS", "PERSONAL_ADDRESS", "ORGANIZATIONAL_ADDRESS"}:
             return "identity"
         if f.field in STRONG_FIELDS.get(f.name, ()):
+            if writing and f.name == "PRODUCT" and stock_designation(value):
+                return "keep"
             return "identity"
         if f.name == "DESCRIPTIVE_REPRESENTATION_ITEM" and f.field == 1 and f.label in PROPERTY_KEYS:
             return "identity"
@@ -127,7 +131,7 @@ def _scan(data, handler, emit):
                 if len(token) < 2 or token[-1] != "'" or not stack:
                     raise ValueError("invalid quoted field")
                 value = _decode(token)
-                role = _role(stack, value)
+                role = _role(stack, value, writing=emit)
                 replacement = handler(role, value)
                 if emit and replacement != value:
                     result = _quote(replacement)

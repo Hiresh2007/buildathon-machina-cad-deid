@@ -24,7 +24,7 @@ import sat
 import svg
 import vrml
 import workers as file_workers
-from naming import DIMENSION, canonical, engineering_directory, path_identities, repository_alias, repository_parts, structural
+from naming import DIMENSION, canonical, engineering_directory, path_identities, repository_alias, repository_parts, stock_designation, structural
 
 
 HANDLERS = {".step": step, ".stp": step, ".dxf": dxf, ".stl": mesh, ".pdf": drawing_pdf,
@@ -60,6 +60,8 @@ class Identities:
 
     def learn(self, value, *, allow_structural=False):
         word = canonical(value)
+        if stock_designation(value):
+            return
         if len(word) < 3 or not any(c.isalpha() for c in word) or (not allow_structural and structural(word)) or word in step.NEUTRAL:
             return
         node = self.words
@@ -143,7 +145,7 @@ class PathIndex:
             joined = repository_parts(stem, parents)
             if joined:
                 return repository_alias(joined, self.ids.alias)
-        preserve = structural(stem) or (
+        preserve = (not directory and stock_designation(stem)) or structural(stem) or (
             directory and self.ids.preserve_directories
             and engineering_directory(stem, parents, self.ids.preserve_repository_folders)
         )
@@ -198,7 +200,7 @@ def _write_code(staged):
         "pipeline.py", "workers.py", "step.py", "dxf.py", "naming.py", "mesh.py", "drawing_pdf.py", "pdf_identity.py",
         "sat.py", "svg.py", "fcstd.py", "manufacturing.py", "check_manufacturing.py", "vrml.py", "check_vrml.py", "requirements.txt", "requirements-verify.txt", "check.py",
         "check_formats.py", "check_pdf_identity.py", "check_native_formats.py", "test_pdf_fidelity.py", "check_exchange.py", "check_geometry.py",
-        "check_dxf.py", "stream_corpus.py", "select_practice.py", "select_drawings.py", "screen_pdfs.py", "check_stream.py", "inspect_native.py", "NATIVE-AUDIT.md", "test_part_descriptors.py",
+        "check_dxf.py", "stream_corpus.py", "select_practice.py", "select_drawings.py", "screen_pdfs.py", "check_stream.py", "inspect_native.py", "NATIVE-AUDIT.md", "test_part_descriptors.py", "test_standard_designations.py",
         "fork_discovery.py", "test_repository_paths.py", "STREAMING.md", "README.md", "LICENSE",
     )
     for name in names:
