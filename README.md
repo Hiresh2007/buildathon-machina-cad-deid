@@ -119,6 +119,8 @@ python check_vrml.py --sample-dir /private/work/wrl --manifest /private/work/man
 
 ### Identity consistency across PDF drawings
 
+A part code can appear before a mechanical description in an engineering filename. When drawings and models in one collection corroborate the code, the processor gives the code a common pseudonym and retains the descriptor. In the drawing inventory, 623 paths used this mapping, including 277 PDFs. Of 36 sampled drawings, 32 passed independent checks across 62 pages, 50 dimensions and 2,804 vector objects. All 30 accepted drawings whose original title matched the filename retained that match. The other four drawings were withheld by the usual verification checks.
+
 Typed authorship fields can include a Windows domain and login followed by a workstation in parentheses. The qualified account keeps its pseudonym when the workstation changes. A bare login is associated with that account only when both spellings occur in person fields in the same document and the corpus contains a single qualifying domain. Multiple domains retain separate pseudonyms. Shared system logins keep their unqualified representation. The private checkpoint stores these observations before the rewrite pass.
 
 Some PDF filenames append a drawing descriptor or CAD extension to the model stem. When the corresponding model exists in the same directory, the drawing retains both its model pseudonym and its descriptor. In 89 such drawing paths the previous processor retained that relationship once and the updated processor retained it 89 times. Eighty-eight drawings also passed the full PDF checks, covering 114 pages, 28,280 vector objects, 131 images and 50 dimensions.

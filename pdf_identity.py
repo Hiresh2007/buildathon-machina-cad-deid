@@ -5,7 +5,7 @@ from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 import re
 
-from naming import canonical, engineering_directory, repository_alias, repository_parts, structural
+from naming import DIMENSION, canonical, engineering_directory, repository_alias, repository_parts, structural
 
 
 # Only an email address, an HTTP(S) address, or an explicit www host supplies
@@ -17,6 +17,7 @@ DIRECTORY_REPORT = "Conventional engineering directories are retained in artifac
 REPOSITORY_REPORT = "GitHub owner and repository names retain separate pseudonyms in source paths."
 REPOSITORY_FOLDER_REPORT = "Generic engineering folders directly inside a GitHub project retain their names."
 MODEL_REPORT = "Drawing filename descriptors are retained with their adjacent model pseudonyms."
+PART_REPORT = "Corroborated part codes share a pseudonym across drawings and models while retaining mechanical descriptors."
 SHEET_TITLE = re.compile(
     r"(?P<base>[^/\\\r\n]{1,200}?)"
     r"(?P<suffix>(?:\s*[-–—_:|,;]\s*|\s+)(?:sheet|page|layout|blatt|feuille|hoja|foglio)"
@@ -178,7 +179,8 @@ def restore_directory_forms(root, attempt, paths, ids):
                 forms.update(item for item in observed if use_hosts or item[0] != "hostname")
         except (OSError, ValueError):
             continue
-    resolve(forms, ids, paths if SHEET_REPORT in lines else (), link_models=MODEL_REPORT in lines)
+    resolve(forms, ids, paths if SHEET_REPORT in lines else (), link_models=MODEL_REPORT in lines,
+            link_parts=PART_REPORT in lines)
 
 
 class Observations(set):
@@ -265,6 +267,15 @@ def typed(role, value, alias):
 
 
 MODEL_EXTENSIONS = {".sldprt", ".sldasm", ".step", ".stp", ".ipt", ".iam", ".fcstd", ".sat", ".stl", ".3mf"}
+PART_WORDS = frozenset("""
+    assembly adapter axle bar bearing block body bolt bottom bracket bushing cable cap clamp clip collar
+    connector cover coupling door enclosure flange frame front gasket gear guide handle head hinge holder
+    housing insert knob left lever lid lower mount mounting motor nut panel pin pipe plate pulley rail rear
+    right ring rod roller screw shaft shell side spacer spindle spring support switch top tube upper valve
+    washer wheel
+""".split())
+PART_CODE = re.compile(r"(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9][A-Za-z0-9._-]*(?: [A-Za-z0-9][A-Za-z0-9._-]*){0,2}\Z")
+STANDARD_CODE = re.compile(r'^(?:DIN|ISO|ANSI|ASTM|ASME|IEC|SAE|EN|BS|JIS|REV|VER|V)[\s._-]*(?=\d)', re.I)
 DRAWING_STEM = re.compile(
     r"(?P<base>.+?)(?P<suffix>[ _.-]+(?:assembly drawing|part drawing|detail drawing|technical drawing|"
     r"drawing|dwg|dibujo|dessin|zeichnung)|\.(?:slddrw|idw|dxf))\Z", re.I,
@@ -292,7 +303,40 @@ def link_drawing_names(paths, ids):
             ids.replacements.setdefault(name, next(iter(values)))
 
 
-def resolve(forms, ids, paths=(), *, link_models=True):
+def link_part_names(paths, ids):
+    """Keep the mechanical suffix when other files in the same collection confirm a part code."""
+    groups = defaultdict(list)
+    for path in paths:
+        ext = path.suffix.casefold()
+        if ext not in MODEL_EXTENSIONS and ext not in {'.dxf', '.pdf'}:
+            continue
+        stem = path.stem
+        scope = path.parts[:3] if len(path.parts) >= 4 and path.parts[0].casefold() == 'sources' else path.parent
+        for space in re.finditer(r'\s+', stem):
+            prefix, suffix = stem[:space.start()], stem[space.end():]
+            words = re.split(r'[\s_-]+', canonical(suffix))
+            if (len(words) > 4 or not all(word in PART_WORDS for word in words) or len(prefix) > 55
+                    or not PART_CODE.fullmatch(prefix) or STANDARD_CODE.match(prefix)
+                    or structural(prefix) or DIMENSION.search(prefix)):
+                continue
+            groups[scope, canonical(prefix)].append((stem, suffix, ext))
+            break
+    proposals = defaultdict(set)
+    for (_, prefix), records in groups.items():
+        forms = {canonical(stem) for stem, _, _ in records}
+        extensions = {ext for _, _, ext in records}
+        if len(forms) == 1 and not ('.pdf' in extensions and extensions & MODEL_EXTENSIONS):
+            continue
+        replacement = ids.alias(prefix)
+        ids.learn(prefix)
+        for stem, suffix, _ in records:
+            proposals[canonical(stem)].add(replacement + ' ' + suffix)
+    for name, values in proposals.items():
+        if len({canonical(value) for value in values}) == 1:
+            ids.replacements.setdefault(name, min(values))
+
+
+def resolve(forms, ids, paths=(), *, link_models=True, link_parts=True):
     domains = defaultdict(set)
     confirmed = defaultdict(set)
     titles = set()
@@ -323,6 +367,8 @@ def resolve(forms, ids, paths=(), *, link_models=True):
         ):
             ids.replacements[login] = ids.alias(next(iter(roots)))
     paths = tuple(paths)
+    if link_parts:
+        link_part_names(paths, ids)
     if link_models:
         link_drawing_names(paths, ids)
     for title in sorted(titles):

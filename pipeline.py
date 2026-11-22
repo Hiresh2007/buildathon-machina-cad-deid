@@ -253,7 +253,7 @@ def _write_code(staged):
     dest.mkdir()
     names = (
         "pipeline.py", "workers.py", "step.py", "dxf.py", "naming.py", "mesh.py", "drawing_pdf.py", "jpeg_authors.py", "pdf_identity.py",
-        "sat.py", "svg.py", "fcstd.py", "manufacturing.py", "check_manufacturing.py", "vrml.py", "check_vrml.py", "requirements.txt", "requirements-verify.txt", "check.py",
+        "sat.py", "svg.py", "fcstd.py", "manufacturing.py", "check_manufacturing.py", "vrml.py", "check_vrml.py", "requirements.txt", "requirements-verify.txt", "check.py", "test_part_descriptors.py",
         "check_formats.py", "check_pdf_identity.py", "check_native_formats.py", "test_pdf_fidelity.py", "test_jpeg_authors.py", "check_exchange.py", "check_geometry.py",
         "check_dxf.py", "stream_corpus.py", "select_practice.py", "select_drawings.py", "screen_pdfs.py", "check_stream.py", "inspect_native.py", "NATIVE-AUDIT.md",
         "STREAMING.md", "README.md", "LICENSE",
@@ -315,7 +315,7 @@ def run(input_dir, attempt, key_file, limit, workers=1):
         _write_code(staged)
         report = [
             "Machina CAD De-ID", "", pdf_identity.CONTACT_REPORT, pdf_identity.STEP_CONTACT_REPORT, pdf_identity.SHEET_REPORT,
-            pdf_identity.DIRECTORY_REPORT, pdf_identity.REPOSITORY_REPORT, pdf_identity.REPOSITORY_FOLDER_REPORT, pdf_identity.MODEL_REPORT,
+            pdf_identity.DIRECTORY_REPORT, pdf_identity.REPOSITORY_REPORT, pdf_identity.REPOSITORY_FOLDER_REPORT, pdf_identity.MODEL_REPORT, pdf_identity.PART_REPORT,
             "Reproduce on Python 3.12: install PDF support with python3 -m pip install -r code/requirements.txt. Install ExifTool 13.55 on PATH for tagged embedded JPEGs.",
             "python3 code/pipeline.py --input /private/input --attempt /private/new/attempt-1 --key-file /private/key.bin",
             f"This run used --max-mib {limit // (1024 * 1024)} --workers {workers}. Supply the same 32-byte private key and input snapshot.",
