@@ -478,18 +478,24 @@ def phase_rows(db, phase):
         yield from batch
 
 
-def start_writer(index):
-    global _writer_index
+def start_writer(index, repeated_sources=()):
+    global _writer_index, _repeated_sources, _verified_outputs
     _writer_index = index
+    _repeated_sources = repeated_sources
+    _verified_outputs = OrderedDict()
 
 
 def transformed(row, args):
     try:
-        data, _ = input_bytes(row, args)
+        data, source_sha = input_bytes(row, args)
     except SourceError as error:
         return 'ready', str(error), None, None
     index = _writer_index
     index.link_counts = Counter()
+    source = (row['ext'], source_sha)
+    if source in _verified_outputs:
+        _verified_outputs.move_to_end(source)
+        return 'staged', '', _verified_outputs[source], index.link_counts
     handler = pipeline.HANDLERS[row['ext']]
     try:
         output = handler.rewrite(data, index.ids.alias, index.ids, lambda value: index.reference(row['path'], value))
@@ -507,17 +513,24 @@ def transformed(row, args):
             check_pdf(data, output, index.ids, Counter())
         except Exception:
             return 'omitted', 'independent PDF rendering or metadata validation failed', None, None
+    # Every source is fetched and hashed, even on a hit. A resolved or missing
+    # reference makes the rewrite depend on this input's directory.
+    if (source in _repeated_sources and not index.link_counts and len(output) <= 512 * 1024
+            and (row['ext'] != '.pdf' or args.verify_pdfs)):
+        _verified_outputs[source] = output
+        if len(_verified_outputs) > 64:
+            _verified_outputs.popitem(last=False)
     return 'staged', '', output, index.link_counts
 
 
-def process_rows(rows, args, operation, index=None):
+def process_rows(rows, args, operation, index=None, repeated_sources=()):
     # Native PDF and system frameworks on macOS require fresh interpreter workers.
     # On Linux, workers share the immutable inventory by copy-on-write.
     # Prefetch starts network threads in the parent. Forking would inherit TLS locks.
     threaded = getattr(args, 'prefetch_small', 0) and not args.offline
     context = multiprocessing.get_context('spawn' if sys.platform == 'darwin' or threaded else 'fork')
     with ProcessPoolExecutor(max_workers=args.workers, mp_context=context, initializer=start_writer,
-                             initargs=(index,)) as pool:
+                             initargs=(index, repeated_sources)) as pool:
         pending = {pool.submit(operation, dict(row), args): row for row in itertools.islice(rows, args.workers)}
         while pending:
             complete, _ = wait(pending, return_when=FIRST_COMPLETED)
@@ -547,12 +560,18 @@ def work(db, args, key):
         discovery = phase == 'discover'
         operation = source_identities if discovery else transformed
         rows = itertools.islice(phase_rows(db, phase), remaining)
+        repeated_sources = ()
         if discovery:
             candidates = duplicate_discoveries(db)
             rows = with_discovery_hints(rows, candidates)
+        else:
+            repeated_sources = {tuple(row) for row in db.execute(
+                "SELECT ext, source_sha FROM files WHERE status='ready' AND source_sha IS NOT NULL "
+                "GROUP BY ext, source_sha HAVING COUNT(*) > 1"
+            )}
         if getattr(args, 'prefetch_small', 0) and not args.offline:
             rows = prefetch_small_sources(rows if discovery else map(dict, rows), args)
-        for row, result in process_rows(rows, args, operation, index):
+        for row, result in process_rows(rows, args, operation, index, repeated_sources):
             if remaining is not None:
                 remaining -= 1
             if discovery:

@@ -55,6 +55,8 @@ Use `--prefetch-small 6 --prefetch-kib 512` to include files up to 512 KiB in th
 
 With prefetch enabled, the writer also reads small inputs ahead while it transforms the preceding files. Each worker checks the input size, organizer MD5 and the SHA-256 recorded at discovery. An unavailable or changed source stays pending for retry. Across four alternating batches of 88 uncached inputs, two workers took 47.22 seconds without rewrite prefetch and 36.96 seconds with it. All 88 outputs and reference counts agreed. Separate complete CLI runs matched on 26 further drawings and models, including six PDFs.
 
+When the same input occurs on several paths, a writer can reuse a successfully validated result within the current inventory. Each path still passes the organizer size, MD5 and discovery SHA-256 checks. The writer repeats the transformation for any source that uses a file reference. Each worker retains up to 64 path-independent outputs of at most 512 KiB each. Across alternating trials on 89 actual paths covering ten extensions, elapsed time went from 45.11 to 30.21 seconds. All dispositions, paths, output bytes and reference counts matched. A separate run through the command line produced identical files on 34 additional paths.
+
 ## Applying the path resolver to a discovery checkpoint
 
 This release uses the same byte-level discovery as full-manifest release `30bb3bb`. Once the global inventory is built, it shares an owner's pseudonym across that owner's GitHub repositories, retains recognized engineering folders in their path context, and preserves a drawing suffix when a neighboring model confirms its stem.
