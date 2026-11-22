@@ -328,7 +328,7 @@ def field(key, value, alias, redact):
 
 def xmp(source, alias, redact):
     if not source:
-        return source
+        return ""
     marker = (
         source.replace(b"\0", b"").upper()
         if isinstance(source, bytes)
