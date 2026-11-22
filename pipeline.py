@@ -24,7 +24,7 @@ import sat
 import svg
 import vrml
 import workers as file_workers
-from naming import canonical, structural, DIMENSION
+from naming import DIMENSION, canonical, engineering_directory, path_identities, repository_alias, repository_parts, structural
 
 
 HANDLERS = {".step": step, ".stp": step, ".dxf": dxf, ".stl": mesh, ".pdf": drawing_pdf,
@@ -38,6 +38,9 @@ CONTACT = re.compile(
 class Identities:
     def __init__(self, key):
         self.key = key
+        self.preserve_directories = True
+        self.link_repositories = True
+        self.preserve_repository_folders = True
         self.words = {}
         self.replacements = {}
 
@@ -55,9 +58,9 @@ class Identities:
         dimensions = [m[0].replace("µ", "u").replace("×", "x") for m in DIMENSION.finditer(name)]
         return " ".join(["Anon-" + digest, *dimensions])
 
-    def learn(self, value):
+    def learn(self, value, *, allow_structural=False):
         word = canonical(value)
-        if len(word) < 3 or not any(c.isalpha() for c in word) or structural(word) or word in step.NEUTRAL:
+        if len(word) < 3 or not any(c.isalpha() for c in word) or (not allow_structural and structural(word)) or word in step.NEUTRAL:
             return
         node = self.words
         for char in word:
@@ -119,7 +122,7 @@ class PathIndex:
                 child = parent / part
                 if str(child) not in self.targets:
                     directory = n < len(path.parts) - 1
-                    proposed = self.part(part, directory)
+                    proposed = self.part(part, directory, path.parts[:n])
                     used = taken[self.targets[str(parent)]]
                     if proposed.casefold() in used:
                         suffix = "" if directory else PurePosixPath(proposed).suffix
@@ -133,13 +136,21 @@ class PathIndex:
             self.by_name[canonical(path.name)].append(str(path))
             self.by_relative[canonical(path.as_posix())].append(str(path))
 
-    def part(self, value, directory):
+    def part(self, value, directory, parents=()):
         suffix = "" if directory else PurePosixPath(value).suffix
         stem = value[:-len(suffix)] if suffix else value
-        component = stem if structural(stem) else self.ids.alias(stem)
+        if directory and self.ids.link_repositories:
+            joined = repository_parts(stem, parents)
+            if joined:
+                return repository_alias(joined, self.ids.alias)
+        preserve = structural(stem) or (
+            directory and self.ids.preserve_directories
+            and engineering_directory(stem, parents, self.ids.preserve_repository_folders)
+        )
+        component = stem if preserve else self.ids.alias(stem)
         # Website aliases have a URI form inside documents. Use the same host
         # as a single filename component so a path retains its original depth.
-        return component.removeprefix("https://") + suffix
+        return component.removeprefix("https://").removeprefix("http://").replace("?ref=", "-ref-") + suffix
 
     def reference(self, current, value):
         clean = value.strip().replace("\\", "/").removeprefix("file://")
@@ -188,7 +199,7 @@ def _write_code(staged):
         "sat.py", "svg.py", "fcstd.py", "manufacturing.py", "check_manufacturing.py", "vrml.py", "check_vrml.py", "requirements.txt", "requirements-verify.txt", "check.py",
         "check_formats.py", "check_pdf_identity.py", "check_native_formats.py", "test_pdf_fidelity.py", "check_exchange.py", "check_geometry.py",
         "check_dxf.py", "stream_corpus.py", "select_practice.py", "select_drawings.py", "screen_pdfs.py", "check_stream.py", "inspect_native.py", "NATIVE-AUDIT.md", "test_part_descriptors.py",
-        "STREAMING.md", "README.md", "LICENSE",
+        "fork_discovery.py", "test_repository_paths.py", "STREAMING.md", "README.md", "LICENSE",
     )
     for name in names:
         if (source / name).is_file():
@@ -213,8 +224,7 @@ def run(input_dir, attempt, key_file, limit, workers=1):
     forms = set()
     for path in paths:
         if path.suffix.lower() in HANDLERS:
-            ids.learn(path.stem)
-            for part in path.parts[:-1]:
+            for part in path_identities(path):
                 ids.learn(part)
     counts, omitted, accepted = Counter(), [], []
     for path, names, reason in file_workers.ordered_map(file_workers.discover, (root, limit), sorted(paths), workers):
@@ -254,7 +264,7 @@ def run(input_dir, attempt, key_file, limit, workers=1):
             "The key and private identity dictionary are excluded. See code/README.md for field coverage.",
             "", f"Input files observed: {len(paths)}. Output files: {sum(written.values())}.",
         ]
-        report.append(pdf_identity.PART_REPORT)
+        report.extend(pdf_identity.PATH_REPORTS)
         report += [f"Written {ext}: {count}." for ext, count in sorted(written.items())]
         report += [f"Omitted ({reason}): {count}." for reason, count in sorted(counts.items())]
         report += [f"Path fields {label}: {count}." for label, count in sorted(index.link_counts.items())]

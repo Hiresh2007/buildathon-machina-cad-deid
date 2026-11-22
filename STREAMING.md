@@ -52,3 +52,17 @@ During discovery, the coordinator shares evidence for identical files across wor
 For a network-limited mirror run, `--prefetch-small 6` overlaps six small transfers with the normal parser workers. The buffer holds at most twelve queued inputs of up to 128 KiB each. Cached and larger inputs follow the existing path. Each received input is checked against the manifest before parsing. On 96 uncached organizer files in four alternating groups, two workers took 27.67 seconds without prefetch and 9.45 seconds with it. Source digests, file dispositions and all identity evidence agreed.
 
 Use `--prefetch-small 6 --prefetch-kib 512` to include files up to 512 KiB in those reads. The twelve queued input payloads can then occupy up to 6 MiB. Two separate groups of 96 uncached files between 128 and 512 KiB took 36.88 and 29.06 seconds with the wider limit. The default limit took 59.39 and 46.63 seconds on the same groups. Both runs produced the same source digests, decisions and identity observations for all 192 paths.
+
+## Applying the path resolver to a discovery checkpoint
+
+This release uses the same byte-level discovery as full-manifest release `30bb3bb`. Once the global inventory is built, it shares an owner's pseudonym across that owner's GitHub repositories, retains recognized engineering folders in their path context, and preserves a drawing suffix when a neighboring model confirms its stem.
+
+To carry a partial or complete discovery pass into this release, use a new state and staging folder. Match the original manifest, size limit, native metadata option and PDF verification option.
+
+```sh
+python3 fork_discovery.py --source /private/full/checkpoint.sqlite3 \
+  --manifest /private/machina/manifest.tsv --state /private/path-release \
+  --attempt /private/new-staging/attempt-1 --max-mib 128 --learn-native --verify-pdfs
+```
+
+The command takes a read-only SQLite snapshot, checks the original and current parser releases, and initializes an independent private alias key. The snapshot must precede rewriting and delivery. No mirror reads are required. The new database preserves the pending rows, verified source hashes, previously discovered words and typed forms. Run `stream_corpus.py` using the new paths and the same strategy settings to continue discovery or start rewriting. A later snapshot can capture additional progress in a new destination.

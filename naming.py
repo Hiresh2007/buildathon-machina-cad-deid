@@ -194,6 +194,77 @@ def structural(value):
     )
 
 
+
+# These describe collections of artifacts or manufacturing operations. A repository,
+# organization or user account can still have the same spelling.
+ENGINEERING_DIRECTORIES = frozenset("""
+    blueprints cadfiles cadmodels clamps datasheets diagrams documentation downloads drawingsheets
+    dxffiles enclosures fabrication fasteners firmware fixtures gearboxes gerbers grippers
+    harnesses holders layouts manuals machining machiningfiles manufacturing materials
+    meshes motors originals outputs pcbs pdfs plans plates printables prototypes references
+    renderings revisions schematics sheetmetal spacers stepfiles stls subassemblies
+    templates tooling tutorials weldments washers wiring
+""".split()) | {
+    "assembly files", "assembly instructions", "assembly models", "bom exports",
+    "cad documentation", "cad exports", "cad files", "cad models", "cut sheets",
+    "drawing files", "electrical diagrams", "engineering drawings", "fabrication drawings",
+    "laser cut", "laser cutting", "part drawings", "part files", "pdf drawings",
+    "print files", "production drawings", "reference drawings", "sheet metal",
+    "solidworks files", "step files", "sub assemblies", "technical drawings", "wiring diagrams",
+}
+
+
+# The corpus packs a GitHub owner and repository into one directory. Restrict
+# parsing to the provider prefix and unambiguous pairs of valid components.
+GITHUB_OWNER = re.compile(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\Z")
+GITHUB_REPO = re.compile(r"[A-Za-z0-9._-]{1,100}\Z")
+
+
+def repository_parts(value, parents):
+    if len(parents) < 2 or tuple(part.casefold() for part in parents[-2:]) != ("sources", "github"):
+        return None
+    pieces = value.split("__")
+    if len(pieces) != 2:
+        return None
+    owner, repo = pieces
+    if (len(owner) > 39 or not GITHUB_OWNER.fullmatch(owner) or
+            not GITHUB_REPO.fullmatch(repo) or repo in {".", ".."}):
+        return None
+    return owner, repo
+
+
+def repository_alias(parts, alias):
+    # Individual aliases may have a URL form. Encode separators so the joined
+    # pair remains a single directory in physical paths and PDF titles alike.
+    def component(value):
+        name = alias(value).removeprefix("https://").removeprefix("http://")
+        return name.replace("?ref=", "-ref-").replace("/", "%2F").replace(chr(92), "%5C")
+    return "__".join(component(value) for value in parts)
+
+
+def engineering_directory(value, parents, repository_folders=True):
+    name = re.sub(r"[ _-]+", " ", canonical(value))
+    if name not in ENGINEERING_DIRECTORIES:
+        return False
+    # Preserve the role of the component in provider and home-directory paths.
+    if parents and canonical(parents[-1]) in {"users", "home"}:
+        return False
+    if len(parents) in {2, 3} and canonical(parents[0]) == "sources":
+        provider = canonical(parents[1])
+        if (repository_folders and len(parents) == 3 and provider == "github"
+                and repository_parts(parents[2], parents[:2])):
+            return True
+        if provider in {"github", "gitlab", "grabcad"} or (provider == "web" and len(parents) == 2):
+            return False
+    return True
+
+
+def path_identities(path):
+    yield path.stem
+    for i, part in enumerate(path.parts[:-1]):
+        if not engineering_directory(part, path.parts[:i]):
+            yield part
+
 def canonical(value):
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 

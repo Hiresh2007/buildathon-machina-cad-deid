@@ -4,10 +4,15 @@ from collections import defaultdict
 from pathlib import PurePosixPath
 import re
 
-from naming import DIMENSION, canonical, structural
+from naming import DIMENSION, canonical, engineering_directory, repository_alias, repository_parts, structural
 
 
+DIRECTORY_REPORT = "Conventional engineering directories are retained in artifact paths."
+REPOSITORY_REPORT = "GitHub owner and repository names retain separate pseudonyms in source paths."
+REPOSITORY_FOLDER_REPORT = "Generic engineering folders directly inside a GitHub project retain their names."
+MODEL_REPORT = "Drawing filename descriptors are retained with their adjacent model pseudonyms."
 PART_REPORT = "Corroborated part codes share a pseudonym across drawings and models while retaining mechanical descriptors."
+PATH_REPORTS = (DIRECTORY_REPORT, REPOSITORY_REPORT, REPOSITORY_FOLDER_REPORT, MODEL_REPORT, PART_REPORT)
 
 MODEL_EXTENSIONS = {".sldprt", ".sldasm", ".step", ".stp", ".ipt", ".iam", ".fcstd", ".sat", ".stl", ".3mf"}
 PART_WORDS = frozenset("""
@@ -73,8 +78,16 @@ def asset(value):
     return parts[:-1], name.stem, name.suffix
 
 
-def asset_title(value, alias):
+def asset_title(value, alias, preserve_directories=None, link_repositories=None, repository_folders=None):
     folders, stem, extension = asset(value)
+    if preserve_directories is None:
+        preserve_directories = getattr(getattr(alias, "__self__", None), "preserve_directories", True)
+
+    if link_repositories is None:
+        link_repositories = getattr(getattr(alias, "__self__", None), "link_repositories", True)
+
+    if repository_folders is None:
+        repository_folders = getattr(getattr(alias, "__self__", None), "preserve_repository_folders", True)
 
     def component(part):
         if (
@@ -87,7 +100,17 @@ def asset_title(value, alias):
             return part
         return alias(part)
 
-    return "/".join([*(component(part) for part in folders), component(stem) + extension])
+    parts = []
+    for i, part in enumerate(folders):
+        parents = folders[:i]
+        joined = repository_parts(part, parents) if link_repositories else None
+        if joined:
+            parts.append(repository_alias(joined, alias))
+        elif preserve_directories and engineering_directory(part, parents, repository_folders):
+            parts.append(part)
+        else:
+            parts.append(component(part))
+    return "/".join([*parts, component(stem) + extension])
 
 
 def visible_asset(text):
@@ -109,6 +132,7 @@ def visible_asset(text):
 
 def restore_directory_forms(root, attempt, paths, ids):
     """Rebuild the private evidence used by a separately invoked attempt verifier."""
+    ids.link_repositories = ids.preserve_repository_folders = ids.preserve_directories = False
     if not (attempt / "code" / "pdf_identity.py").is_file():
         return
     import drawing_pdf
@@ -130,7 +154,11 @@ def restore_directory_forms(root, attempt, paths, ids):
                 forms.update(drawing_pdf.discover(source.read_bytes()).forms)
         except (OSError, ValueError):
             continue
-    resolve(forms, ids, paths if PART_REPORT in notes.splitlines() else ())
+    lines = notes.splitlines()
+    ids.preserve_directories = DIRECTORY_REPORT in lines
+    ids.link_repositories = REPOSITORY_REPORT in lines
+    ids.preserve_repository_folders = REPOSITORY_FOLDER_REPORT in lines
+    resolve(forms, ids, paths, link_parts=PART_REPORT in lines, link_models=MODEL_REPORT in lines)
 
 
 class Observations(set):
@@ -192,6 +220,33 @@ def typed(role, value, alias):
     return alias(value)
 
 
+DRAWING_STEM = re.compile(
+    r"(?P<base>.+?)(?P<suffix>[ _.-]+(?:assembly drawing|part drawing|detail drawing|technical drawing|"
+    r"drawing|dwg|dibujo|dessin|zeichnung)|\.(?:slddrw|idw|dxf))\Z", re.I,
+)
+
+
+def link_drawing_names(paths, ids):
+    """Retain a drawing descriptor when a model with the exact base exists beside it."""
+    drawings = defaultdict(list)
+    for path in paths:
+        if path.suffix.casefold() == ".pdf" and (match := DRAWING_STEM.fullmatch(path.stem)):
+            base = canonical(match["base"])
+            if base and not DRAWING_STEM.fullmatch(base):
+                drawings[path.parent, base].append((path.stem, match["suffix"]))
+    proposals = defaultdict(set)
+    for path in paths:
+        if path.suffix.casefold() not in MODEL_EXTENSIONS:
+            continue
+        pair = (path.parent, canonical(path.stem))
+        for name, suffix in drawings.get(pair, ()):
+            model = path.stem if structural(path.stem) else ids.alias(path.stem)
+            proposals[canonical(name)].add(model + suffix)
+    for name, values in proposals.items():
+        if len(values) == 1:
+            ids.replacements.setdefault(name, next(iter(values)))
+
+
 def link_part_names(paths, ids):
     """Keep the mechanical suffix when other files in the same collection confirm a part code."""
     groups = defaultdict(list)
@@ -225,7 +280,7 @@ def link_part_names(paths, ids):
             ids.replacements.setdefault(name, min(values))
 
 
-def resolve(forms, ids, paths=(), *, link_parts=True):
+def resolve(forms, ids, paths=(), *, link_parts=True, link_models=True):
     domains = defaultdict(set)
     confirmed = defaultdict(set)
     titles = set()
@@ -248,9 +303,28 @@ def resolve(forms, ids, paths=(), *, link_parts=True):
             and roots == domains[login]
         ):
             ids.replacements[login] = ids.alias(next(iter(roots)))
+    paths = tuple(paths)
     if link_parts:
         link_part_names(paths, ids)
+    if link_models:
+        link_drawing_names(paths, ids)
     for title in sorted(titles):
         ids.replacements[canonical(title)] = asset_title(title, ids.alias)
+    if ids.link_repositories:
+        # Distinct complete directories let us register each owner/project once.
+        directories = set()
+        for path in paths:
+            pieces = path.parts
+            for i in range(2, len(pieces) - 1):
+                if pieces[i - 1].casefold() == "github" and pieces[i - 2].casefold() == "sources":
+                    directories.add(pieces[i])
+        for joined in sorted(directories):
+            parts = repository_parts(joined, ("sources", "github"))
+            if parts:
+                ids.replacements[canonical(joined)] = repository_alias(parts, ids.alias)
+                ids.learn(joined, allow_structural=True)
+        for title in sorted(titles):
+            if "__" in title:
+                ids.replacements[canonical(title)] = asset_title(title, ids.alias)
     for spelling in sorted(ids.replacements):
         ids.learn(spelling)
