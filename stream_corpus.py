@@ -327,6 +327,7 @@ def docs(db, args, index):
         out.write(pipeline.pdf_identity.REPOSITORY_REPORT + "\n")
         out.write(pipeline.pdf_identity.REPOSITORY_FOLDER_REPORT + "\n")
         out.write(pipeline.pdf_identity.MODEL_REPORT + "\n")
+        out.write(pipeline.pdf_identity.PART_REPORT + "\n")
         out.write("Install ExifTool 13.55 on PATH to read and rewrite tagged JPEG authors.\n")
         out.write("Use code/STREAMING.md to reproduce. Install dependencies listed in code/.\n")
         out.write(f"Input manifest SHA-256: {digest(args.manifest)}\nInput size ceiling: {args.max_mib} MiB.\n")
