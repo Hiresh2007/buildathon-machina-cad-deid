@@ -131,6 +131,10 @@ class UnsupportedPDF(ValueError):
     """A neutral, safe-to-report reason for omitting a PDF."""
 
 
+class UnsupportedFont(UnsupportedPDF):
+    """An embedded font subtype cannot be inspected for replacement text."""
+
+
 class UnindexedLink(UnsupportedPDF):
     """The visible link cannot be mapped to an editable PDF object."""
 
@@ -509,9 +513,22 @@ def redact_page(page, alias, redactor, numeric_title):
             images=pdf.PDF_REDACT_IMAGE_NONE, graphics=pdf.PDF_REDACT_LINE_ART_NONE
         )
         for origin, replacement, size, color, matrix in drawings:
-            page.insert_text(
-                origin, replacement, fontsize=size, color=color, morph=(origin, matrix)
-            )
+            try:
+                page.insert_text(
+                    origin, replacement, fontsize=size, color=color, morph=(origin, matrix)
+                )
+            except TypeError as error:
+                # PyMuPDF 1.26.5 calls its diagnostic with two arguments for an
+                # unsupported FontFile3 subtype while enumerating a page's fonts.
+                trace = error.__traceback__
+                while trace.tb_next is not None:
+                    trace = trace.tb_next
+                frame = trace.tb_frame
+                if (frame.f_globals.get("__name__") == "pymupdf"
+                        and frame.f_code.co_name == "JM_get_fontextension"
+                        and str(error) == "message() takes from 0 to 1 positional arguments but 2 were given"):
+                    raise UnsupportedFont("unsupported embedded PDF font subtype") from error
+                raise
     if page.parent.xref_get_key(page.xref, "Thumb")[0] != "null":
         page.parent.xref_set_key(page.xref, "Thumb", "null")
 
