@@ -53,6 +53,8 @@ For a network-limited mirror run, `--prefetch-small 6` overlaps six small transf
 
 Use `--prefetch-small 6 --prefetch-kib 512` to include files up to 512 KiB in those reads. The twelve queued input payloads can then occupy up to 6 MiB. Two separate groups of 96 uncached files between 128 and 512 KiB took 36.88 and 29.06 seconds with the wider limit. The default limit took 59.39 and 46.63 seconds on the same groups. Both runs produced the same source digests, decisions and identity observations for all 192 paths.
 
+With prefetch enabled, the writer also reads small inputs ahead while it transforms the preceding files. Each worker checks the input size, organizer MD5 and the SHA-256 recorded at discovery. An unavailable or changed source stays pending for retry. Across four alternating batches of 88 uncached inputs, two workers took 47.22 seconds without rewrite prefetch and 36.96 seconds with it. All 88 outputs and reference counts agreed. Separate complete CLI runs matched on 26 further drawings and models, including six PDFs.
+
 ## Applying the path resolver to a discovery checkpoint
 
 This release uses the same byte-level discovery as full-manifest release `30bb3bb`. Once the global inventory is built, it shares an owner's pseudonym across that owner's GitHub repositories, retains recognized engineering folders in their path context, and preserves a drawing suffix when a neighboring model confirms its stem.

@@ -197,11 +197,18 @@ def check_space(folder, extra, args):
         raise Paused("insufficient free space above disk reserve")
 
 
-def source_identities(row, args):
+def input_bytes(row, args):
     if "prefetch_error" in row.keys():
-        return "discover", row["prefetch_error"], None, (), ()
+        raise SourceError(row["prefetch_error"])
+    if "prefetched_input" in row.keys():
+        # The worker independently checks size, organizer MD5 and the discovery SHA.
+        return verified(row, row["prefetched_input"])
+    return fetch(row, args)
+
+
+def source_identities(row, args):
     try:
-        data, sha = verified(row, row["prefetched_input"]) if "prefetched_input" in row.keys() else fetch(row, args)
+        data, sha = input_bytes(row, args)
     except SourceError as exc:
         return "discover", str(exc), None, (), ()
     prior = row["committed_discovery"] if "committed_discovery" in row.keys() else None
@@ -428,7 +435,7 @@ def duplicate_discoveries(db):
 
 
 def prefetch_small_sources(rows, args):
-    """Overlap small mirror transfers with parsing, keeping native readers in separate processes."""
+    """Overlap bounded-size mirror transfers with discovery or rewriting."""
     byte_limit = getattr(args, "prefetch_kib", 128) * 1024
     def take(item):
         row, transfer = item
@@ -478,7 +485,7 @@ def start_writer(index):
 
 def transformed(row, args):
     try:
-        data, _ = fetch(row, args)
+        data, _ = input_bytes(row, args)
     except SourceError as error:
         return 'ready', str(error), None, None
     index = _writer_index
@@ -506,9 +513,8 @@ def transformed(row, args):
 def process_rows(rows, args, operation, index=None):
     # Native PDF and system frameworks on macOS require fresh interpreter workers.
     # On Linux, workers share the immutable inventory by copy-on-write.
-    # Discovery prefetch starts network threads in the parent; forking them would
-    # inherit live TLS connections and locks. Transform workers retain the usual context.
-    threaded = operation is source_identities and getattr(args, 'prefetch_small', 0) and not args.offline
+    # Prefetch starts network threads in the parent. Forking would inherit TLS locks.
+    threaded = getattr(args, 'prefetch_small', 0) and not args.offline
     context = multiprocessing.get_context('spawn' if sys.platform == 'darwin' or threaded else 'fork')
     with ProcessPoolExecutor(max_workers=args.workers, mp_context=context, initializer=start_writer,
                              initargs=(index,)) as pool:
@@ -544,8 +550,8 @@ def work(db, args, key):
         if discovery:
             candidates = duplicate_discoveries(db)
             rows = with_discovery_hints(rows, candidates)
-            if getattr(args, 'prefetch_small', 0) and not args.offline:
-                rows = prefetch_small_sources(rows, args)
+        if getattr(args, 'prefetch_small', 0) and not args.offline:
+            rows = prefetch_small_sources(rows if discovery else map(dict, rows), args)
         for row, result in process_rows(rows, args, operation, index):
             if remaining is not None:
                 remaining -= 1
@@ -597,7 +603,7 @@ def work(db, args, key):
 def options(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prefetch-small", type=int, default=0, metavar="N",
-                        help="overlap N verified mirror reads for small discovery inputs")
+                        help="overlap N verified mirror reads for small discovery and rewrite inputs")
     parser.add_argument("--prefetch-kib", type=int, default=128, metavar="KIB",
                         help="largest input read ahead from the mirror (default: 128 KiB)")
     parser.add_argument("--manifest", required=True, type=Path)
