@@ -148,6 +148,64 @@ TECHNICAL = {
     "general",
     "linear",
 }
+ADDRESS_LABEL = re.compile(
+    r"^\s*(?:postal address|mailing address|registered office|address|adresse|dirección|indirizzo|"
+    r"anschrift|endereço)\s*[:=]\s*", re.I,
+)
+ADDRESS_NUMBER = r"\d{1,7}[A-Za-z]?(?:[-–]\d{1,6})?"
+STREET_WORD = r"[^\W\d_][\w.’'\-]*"
+STREET_SUFFIX = (
+    r"(?:street|avenue|boulevard|road|lane|parkway|highway|close|crescent|court|terrace|allee|"
+    r"st\.?|ave\.?|blvd\.?|rd\.?|ln\.?|pkwy\.?|hwy\.?)"
+)
+STREET_ADDRESS = re.compile(
+    rf"(?<!\w)(?:{ADDRESS_NUMBER}\s+(?:{STREET_WORD}\s+){{1,6}}{STREET_SUFFIX}(?=\s|[,.]|$)|"
+    rf"(?:rue|avenue|boulevard|strada|via|calle)\s+(?:{STREET_WORD}\s+){{0,4}}"
+    rf"{STREET_WORD}[,\s]+{ADDRESS_NUMBER}(?!\w))", re.I,
+)
+US_REGIONS = (
+    r"AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|"
+    r"NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|PR"
+)
+POSTAL_REGION = re.compile(
+    rf"\b(?:{US_REGIONS})\s+\d{{5}}(?:-\d{{4}})?\b|"
+    r"\b[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\s?\d[ABCEGHJ-NPRSTV-Z]\d\b|"
+    r"\b[A-Z]{1,2}\d[A-Z\d]?\s+\d[ABD-HJLNP-UW-Z]{2}\b",
+)
+ADDRESS_ENGINEERING = re.compile(
+    r"\b(?:ISO|DIN|mm|kg|MPa|detail|thread|spindle|shaft|bearing|section|dimension|stroke|hydraulic|"
+    r"assembly|machine|tolerance|pitch|surface|datum|angle|drill|countersink|hole|grade)\b", re.I,
+)
+
+
+def drawing_addresses(records):
+    """Recognize street addresses next to an explicit field label or a postal region in the same block."""
+    candidates, regions = [], []
+    for text, chars, direction in records:
+        if direction[0] < .98 or not chars or len(text) > 260:
+            continue
+        labelled = ADDRESS_LABEL.match(text)
+        matches = [m for m in STREET_ADDRESS.finditer(text) if not ADDRESS_ENGINEERING.search(m[0])]
+        postal = POSTAL_REGION.search(text) is not None
+        if not matches and not postal:
+            continue
+        first = chars[0][0]["bbox"]
+        if postal:
+            regions.append(first)
+        for match in matches:
+            # Abbreviations can carry a final period. Leave that punctuation
+            # on the drawing and use the same street identity in either case.
+            street = match[0].rstrip(".")
+            if (labelled and not text[labelled.end():match.start()].strip()) or postal:
+                yield street
+            else:
+                candidates.append((street, chars[match.start()][0]["bbox"]))
+    for spelling, (x, y, _, bottom) in candidates:
+        height = max(1, bottom - y)
+        if any(abs(x - rx) <= 8 * height and abs(y - ry) <= 3.5 * height for rx, ry, _, _ in regions):
+            yield spelling
+
+
 MEMBERS = {".step": step, ".stp": step, ".dxf": dxf, ".stl": mesh}
 ATTACH_MAX = 32 * 1024 * 1024
 
@@ -802,6 +860,8 @@ def process(data, alias, redact, reference, write):
                     alias.observe_hosts(link.get("uri") or "")
                 records = list(lines(page))
                 strong = title_fields(records, title)
+                for street in drawing_addresses(records):
+                    alias(street)
                 for i, (text, _, _) in enumerate(records):
                     alias.observe_hosts(text)
                     if i in strong:
