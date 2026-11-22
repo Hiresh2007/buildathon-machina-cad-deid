@@ -30,7 +30,7 @@ MIB = 1024 * 1024
 _discoveries = OrderedDict()
 MIRROR = "https://machina-input.joinbuilders.org/"
 _connections = threading.local()
-UPLOADER_SHA = "c5cc9d94525d7fac3a380233f781bacb9df78d6ccb7283b3043ca368efd1ee77"
+UPLOADER_SHA = "a22d91f16bdf4220f73b9afa243a393e5c9143546f4ba48a70ec76f70edacc05"
 SOURCE = Path(__file__).resolve().parent
 
 
@@ -664,7 +664,7 @@ def options(argv=None):
     if any(p.is_relative_to(d) for p in private for d in [args.attempt, SOURCE] + ([args.archive] if args.archive else [])):
         parser.error("keep the key, token and manifest outside all deliverables and code")
     if args.upload_to:
-        pattern = r"gs://builders-machina-submissions-1120/teams/[A-Za-z0-9_-]+/" + args.attempt.name + "/"
+        pattern = r"gs://builders-machina-submissions-use1/teams/[A-Za-z0-9_-]+/" + args.attempt.name + "/"
         if not re.fullmatch(pattern, args.upload_to):
             parser.error("use the team's exact official folder for this numbered attempt, ending in /")
         if not args.uploader or not args.token_file or digest(args.uploader) != UPLOADER_SHA:
