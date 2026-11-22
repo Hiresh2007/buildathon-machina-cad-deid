@@ -14,6 +14,8 @@ import zlib
 
 import olefile
 
+from naming import canonical, structural
+from pdf_identity import Observations
 from pipeline import Identities
 
 NATIVE = {".sldprt", ".sldasm", ".slddrw", ".ipt", ".iam", ".idw"}
@@ -21,13 +23,23 @@ CFB = bytes.fromhex("d0cf11e0a1b11ae1")
 GENERIC = {"none", "default", "user", "administrator", "autodesk", "inventor", "solidworks", "unknown"}
 SUMMARY = {4: "author", 8: "last saved by"}
 DOCUMENT = {14: "manager", 15: "company"}
-TRACKING = {5: "part number", 7: "project", 41: "designer", 42: "engineer", 43: "authority"}
+TRACKING = {
+    5: "part number", 7: "project", 10: "checked by", 12: "engineering approver",
+    23: "catalog contact", 30: "vendor", 34: "manufacturing approver",
+    41: "designer", 42: "engineer", 43: "authority",
+}
+TRACKING_CONTROL = {5: "checked out by", 7: "checked in by", 16: "saved account"}
+ADDED_FIELDS = {"checked by", "engineering approver", "catalog contact", "vendor",
+                "manufacturing approver", *TRACKING_CONTROL.values()}
+PEOPLE = {"author", "last saved by", "manager", "designer", "engineer", "checked by",
+          "engineering approver", "manufacturing approver", *TRACKING_CONTROL.values()}
 FIELDS = {
     "f29f85e0-4ff9-1068-ab91-08002b27b3d9": SUMMARY,
     "3d38de39-0588-4c14-bb37-18f4d5dd31c7": SUMMARY,
     "d5cdd502-2e9c-101b-9397-08002b2cf9ae": DOCUMENT,
     "8cf58000-da66-4ae6-8ff0-7b58406fb049": DOCUMENT,
     "32853f0f-3444-11d1-9e93-0060b03c1ca6": TRACKING,
+    "d861fb30-3136-11d1-9e92-0060b03c1ca6": TRACKING_CONTROL,
 }
 
 
@@ -46,6 +58,7 @@ class Field:
     wide_type: bool
     codec: str
     value: str
+    role: str = ""
 
     def encoded(self, alias):
         chars = (alias + "\0").encode(self.codec)
@@ -103,7 +116,7 @@ def fields(blob):
             except (UnicodeError, LookupError) as error:
                 raise ValueError("unsupported property text encoding") from error
             if value and "\0" not in value:
-                yield Field(section, pid, at, limit, wide, encoding, value)
+                yield Field(section, pid, at, limit, wide, encoding, value, known[pid])
 
 
 def discover(data):
@@ -116,14 +129,30 @@ def discover(data):
     return ()
 
 
+def observe_properties(raw, found):
+    for item in fields(raw):
+        value = item.value.strip()
+        if item.role in ADDED_FIELDS:
+            if (not 3 <= len(value) <= 256 or canonical(value) in GENERIC
+                    or structural(value) or not any(char.isalpha() for char in value)):
+                continue
+            if item.role == "catalog contact" and not re.search(r"https?://|www\.|@", value, re.I):
+                continue
+        found.add(item.value)
+        if item.role in PEOPLE:
+            found.observe("person", value)
+        found.observe_hosts(value)
+
+
 def compound_identities(data):
+    found = Observations()
     with olefile.OleFileIO(io.BytesIO(data)) as compound:
         for path in compound.listdir():
-            stream = compound.openstream(path)
-            if stream.read(2) == b"\xfe\xff":
-                stream.seek(0)
-                for item in fields(stream.read()):
-                    yield item.value
+            with compound.openstream(path) as stream:
+                if stream.read(2) == b"\xfe\xff":
+                    stream.seek(0)
+                    observe_properties(stream.read(), found)
+    return found.finish()
 
 
 def inspect(data, ids):
