@@ -107,9 +107,16 @@ def fields(blob):
 
 
 def discover(data):
-    """Learn typed identities in a private first pass; does not approve native file emission."""
-    if not data.startswith(CFB):
-        return
+    """Read native identity fields for the shared pseudonym inventory."""
+    if data.startswith(CFB):
+        return compound_identities(data)
+    if data[4:8] == bytes((0, 0, 0, 4)):
+        from native_solidworks import discover as modern_identities
+        return modern_identities(data)
+    return ()
+
+
+def compound_identities(data):
     with olefile.OleFileIO(io.BytesIO(data)) as compound:
         for path in compound.listdir():
             stream = compound.openstream(path)

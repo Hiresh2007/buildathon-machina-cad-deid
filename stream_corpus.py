@@ -90,6 +90,7 @@ def init_db(db, args, key):
     code.update(Path(handler.__file__) for handler in pipeline.HANDLERS.values())
     if args.learn_native:
         code.add(SOURCE / "inspect_native.py")
+        code.add(SOURCE / "native_solidworks.py")
     if args.verify_pdfs:
         code.update((SOURCE / 'check_native_formats.py', SOURCE / 'requirements-verify.txt'))
     with db:
